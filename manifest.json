@@ -1,0 +1,10 @@
+{
+	"id": "chatterbot",
+	"name": "Chatterbot",
+	"version": "0.0.1",
+	"minAppVersion": "0.16.0",
+	"description": "Talk to your vault. Chatbot with Svelte UI, using LangChain + OpenAI inside Obsidian.",
+	"author": "Altai Battulga",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
