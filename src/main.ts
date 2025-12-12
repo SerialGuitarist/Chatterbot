@@ -42,7 +42,7 @@ export default class ChatterbotPlugin extends Plugin {
 			this.activateView();
 		});
 
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new ChatterBotSettingTab(this.app, this));
 		this.activateView();
 	}
 
@@ -88,55 +88,18 @@ export default class ChatterbotPlugin extends Plugin {
 		return mainResult;
 	}
 
+	async update() {
+		await this.rag.updateFromVault();
+	}
+
 	async test() {
 		const retriever = this.rag.getRetriever();
 		const output = await retriever.invoke("Who is Governance of Iron");
 		console.log(output);
-		// console.log(this.rag);
-		// const vault = this.app.vault;
-		// let documents: Document[] = await Promise.all(
-			// vault.getMarkdownFiles().map( async (file) => {
-				// return new Document({
-					// pageContent: await vault.cachedRead(file),
-					// metadata: { source: file.path }
-				// })
-			// })
-		// );
-// 
-		// ////////////////////// splitting docuemnts
-		// const textSplitter = new RecursiveCharacterTextSplitter({
-			// chunkSize: 1000,
-			// chunkOverlap: 200,
-		// });
-// 
-		// const allSplits = await textSplitter.splitDocuments(documents);
-// 
-		// // console.log(allSplits.length);
-// 
-		// //////////////////// embedding
-		// const embeddings = new OpenAIEmbeddings({
-			// model: "text-embedding-3-large"
-		// });
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
+class ChatterBotSettingTab extends PluginSettingTab {
 	plugin: ChatterbotPlugin;
 
 	constructor(app: App, plugin: ChatterbotPlugin) {

@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 
 import  ChatterUI from '../ui/ChatterUI.svelte';
 import { mount, unmount } from 'svelte';
@@ -53,6 +53,11 @@ export class ChatterbotView extends ItemView {
 		messages.update(m => []);
 	}
 
+	update = async () => {
+		// messages.update(m => [...m, {role: "user", content: "test appended"}]);
+		this.plugin.update();
+	}
+
 	// methods lose their context for "this" when passed around as callbacks
 	// so the svelte button calling this thinks "this" refers to something svelte
 	// async openai() {
@@ -66,6 +71,9 @@ export class ChatterbotView extends ItemView {
 		// console.log(chatHistory);
 		const result = await this.plugin.askLlama(chatHistory);
 		const reply = result.reply;
+		
+		// TODO: handle context here
+
 
 		// TODO: error handling here
 		messages.update(m => [...m, {role: "assistant", content: reply.content}]);
@@ -75,7 +83,7 @@ export class ChatterbotView extends ItemView {
 	summarize = async () => {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) {
-			console.log("No file open");
+			new Notice("No file open");
 			return;
 		}
 

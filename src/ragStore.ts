@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { Plugin, Notice } from "obsidian";
 import { Document } from "@langchain/core/documents";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { OpenAIEmbeddings } from "@langchain/openai";
@@ -133,28 +133,29 @@ export class RAGStore {
 
 		// -------------- 0. setting up
 		// warm up. go do some stretches and run a few klicks and then some more stretches
-		console.log("Updating from vault")
+		new Notice("Chatterbot: Updating from vault")
 
 		// -------------- 1. pass over the current files
 		const allCurrentFiles = new Set<string>();
 		const filesToEmbed = new Set<TFile>();
 
 		const vault = this.plugin.app.vault;
-		const vaultFiles = vault.getMarkdownFiles()
-		console.log("---- 1. Passing over " + vaultFiles.length + " vault files.")
+		const vaultFiles = vault.getMarkdownFiles();
+		const persistedFilesSet: Set<string> = new Set(this.persistedFiles);
+		new Notice("1/6: Passing over " + vaultFiles.length + " vault files.");
 		for (const file of vaultFiles) {
 
 			allCurrentFiles.add(file.path);
 			// console.log(file)
 
-			if (file.stat.mtime > this.lastUpdate) {
+			if (file.stat.mtime > this.lastUpdate || !persistedFilesSet.has(file.path)) {
 				filesToEmbed.add(file);
 			}
 		}
 
 		// -------------- 2. pass over the persisted files
 		const deletedFiles = new Set<string>();
-		console.log("---- 2. Passing over " + this.persistedFiles.length + " persisted files.")
+		new Notice("2/6: Passing over " + this.persistedFiles.length + " persisted files.")
 		for (const file of this.persistedFiles) {
 			if (!allCurrentFiles.has(file)) {
 				deletedFiles.add(file);
@@ -163,9 +164,10 @@ export class RAGStore {
 
 		// -------------- 3. pass over persisted chunks
 		const newChunks: PersistedChunk[] = [];
-		console.log("---- 3. Passing over " + this.chunks.length + " persisted chunks.")
+		const changedFiles = new Set<string>(Array.from(filesToEmbed).map(f => f.path));
+		new Notice("3/6: Passing over " + this.chunks.length + " persisted chunks.")
 		for (const chunk of this.chunks) {
-			if (!deletedFiles.has(chunk.file)) {
+			if (!deletedFiles.has(chunk.file) && !changedFiles.has(chunk.file)) {
 				newChunks.push(chunk);
 			}
 		}
@@ -175,10 +177,9 @@ export class RAGStore {
 			chunkSize: 1000,
 			chunkOverlap: 200,
 		});
-		console.log("---- 4. Passing over " + filesToEmbed.size + " files to embed.")
+		new Notice("4/6: Passing over " + filesToEmbed.size + " files to embed.")
 		for (const file of filesToEmbed) {
 			const text = await vault.cachedRead(file);
-
 
 			const splits = await splitter.splitText(text);
 
@@ -200,7 +201,7 @@ export class RAGStore {
 
 		// -------------- 5. persisted chunks -> vector store
 		this.chunks = newChunks;
-		console.log("---- 5. Rebuilding vector store from " + this.chunks.length + " chunks.");
+		new Notice("5/6: Rebuilding vector store from " + this.chunks.length + " chunks.");
 
 		// rebuild vector store
 		this.vectorStore = new MemoryVectorStore(this.embeddings);
@@ -221,9 +222,11 @@ export class RAGStore {
 		);
 
 		// -------------- 6. final cleanups
+		new Notice("6/6: Applying final changes");
 		this.lastUpdate = Date.now();
 		this.persistedFiles = Array.from(allCurrentFiles);
 		await this.save();
+		new Notice("Chatterbot RAG updated!");
 	}
 
 

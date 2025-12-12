@@ -43,11 +43,12 @@ export default class Llama {
 		// 3. use that to get the context documents
 		const output = await retriever.invoke(lastUserMessage);
 		const contexts = output.map((doc) => doc.pageContent );
+		const context = {role: "system", content: "Context: " + contexts.join("\n---\n")};
 
 		// 4. append that to the messages
 		const augmentedMessages = [
 			...messages,
-			{role: "system", content: "Context: " + contexts.join("\n---\n")}
+			context
 		];
 
 		const formatted = augmentedMessages.map(toLC);
@@ -55,7 +56,7 @@ export default class Llama {
 
 		return {
 			reply: result,
-			context: contexts
+			context: context
 		};
 	}
 

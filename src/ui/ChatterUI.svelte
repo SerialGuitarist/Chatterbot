@@ -71,8 +71,8 @@
 	<div class="buttons">
 		<button on:click={view.test}>Test</button>
 		<button on:click={view.summarize}>Summarize</button>
-		<button on:click={view.clear}>Clear</button>
-		<button on:click={view.llama}>Llama</button>
+		<button on:click={view.clear}>Clear Conversation</button>
+		<button on:click={view.update}>Update from vault</button>
 	</div>
 </div>
 
