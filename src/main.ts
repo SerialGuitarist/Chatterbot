@@ -370,5 +370,15 @@ class ChatterBotSettingTab extends PluginSettingTab {
 					this.plugin.settings.tools.notice = value;
 					await this.plugin.saveSettings();
 				}));
+
+		new Setting(containerEl)
+			.setName('List Markdown Files')
+			.setDesc('Enable the agent to list and browse markdown files in your vault')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.tools.listMarkdownFiles ?? true)
+				.onChange(async (value) => {
+					this.plugin.settings.tools.listMarkdownFiles = value;
+					await this.plugin.saveSettings();
+				}));
 	}
 }

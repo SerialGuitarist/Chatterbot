@@ -50,6 +50,13 @@ export class RAGStore {
 	lastUpdate: number = 0;
 	hasValidEmbeddings: boolean = false;
 
+	/**
+	 * Get the Obsidian vault
+	 */
+	get vault() {
+		return this.plugin.app.vault;
+	}
+
 
 	constructor(plugin: Plugin) {
 	// constructor(plugin: Plugin, hashFunction = xxhash) {

@@ -84,14 +84,24 @@ export class ChatterbotView extends ItemView {
 			(llama as any).abortController = abortController;
 			
 			const chatHistory = get(messages);
+			let streamingMessageIndex = -1;
+			let isStreaming = false;
 			
-			// Set up streaming callback
+			// Set up streaming callback - append tokens to streaming message
 			llama.onStreamToken = (token: string) => {
 				messages.update(m => {
+					// Create streaming message on first token
+					if (!isStreaming) {
+						isStreaming = true;
+						const newMsg = { role: "assistant" as const, content: token };
+						streamingMessageIndex = m.length;
+						return [...m, newMsg];
+					}
+					
+					// Append token to streaming message
 					const updated = [...m];
-					// Update the last assistant message if it exists
-					if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
-						updated[updated.length - 1].content = token;
+					if (streamingMessageIndex >= 0 && streamingMessageIndex < updated.length) {
+						updated[streamingMessageIndex].content += token;
 					}
 					return updated;
 				});
@@ -103,12 +113,19 @@ export class ChatterbotView extends ItemView {
 			llama.onStreamToken = undefined;
 			(llama as any).abortController = null;
 			
+			// Remove the streaming placeholder message if it exists
+			if (streamingMessageIndex >= 0) {
+				messages.update(m => {
+					const updated = [...m];
+					updated.splice(streamingMessageIndex, 1);
+					return updated;
+				});
+			}
+			
 			// Add each result message to UI and chat store
 			for (const msg of resultMessages) {
-				// Add to messages store for UI
 				messages.update(m => [...m, msg]);
 				
-				// Save to chat store with metadata
 				await (this as any).plugin.chatStore.addMessageToCurrentChat(
 					msg.role,
 					msg.content,

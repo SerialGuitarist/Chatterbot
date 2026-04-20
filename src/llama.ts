@@ -66,15 +66,40 @@ export class Llama {
 			].map(toLC);
 
 			this.status({ phase: "calling_model"});
-			const result = await this.model!.invoke(augmentedMessages);
-			this.status({ phase: "idle"});
+			let fullContent = "";
 
-			// Handle content that might be string or array
-			let contentStr = typeof result.content === 'string' ? result.content : String(result.content);
+			try {
+				// Stream the response to collect tokens
+				const stream = await this.model!.stream(augmentedMessages);
+				
+				for await (const chunk of stream) {
+					if (chunk.content) {
+						const content = chunk.content;
+						// Handle content that might be string or array
+						const contentStr = typeof content === 'string' ? content : (Array.isArray(content) ? content.map((c: any) => c.text || '').join('') : String(content));
+						
+						// Emit new tokens only
+						const newContent = contentStr.slice(fullContent.length);
+						if (newContent) {
+							fullContent = contentStr;
+							if (this.onStreamToken) {
+								this.onStreamToken(newContent);
+							}
+						}
+					}
+				}
+			} catch (streamError) {
+				console.error("Streaming error, falling back to invoke:", streamError);
+				// Fallback to non-streaming if streaming fails
+				const result = await this.model!.invoke(augmentedMessages);
+				fullContent = typeof result.content === 'string' ? result.content : String(result.content);
+			}
+
+			this.status({ phase: "idle"});
 
 			return [{
 				role: "assistant",
-				content: contentStr
+				content: fullContent
 			}];
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
@@ -119,7 +144,7 @@ export abstract class ManualLlama extends Llama {
 		this.status({ phase: "thinking", detail: "Setting up model"});
 
 		// Build system message with tool descriptions
-		const toolInstructions = ToolsFactory.getToolInstructions(this.toolsConfig, this.rag);
+		const toolInstructions = ToolsFactory.getToolInstructions(this.toolsConfig, this.rag, this.rag?.vault);
 		
 		this.systemMessage = {
 			role: "system",
@@ -142,7 +167,8 @@ export abstract class ManualLlama extends Llama {
 		this.tools = ToolsFactory.createTools(
 			this.toolsConfig,
 			this.rag,
-			(s: any) => this.status(s)
+			(s: any) => this.status(s),
+			this.rag?.vault
 		);
 	}
 
@@ -188,15 +214,30 @@ export abstract class ManualLlama extends Llama {
 				// Parse text-based tool calls from content
 				let contentToolCalls: any[] = [];
 				if (!toolCalls && response.content && typeof response.content === 'string') {
-					const toolCallRegex = /<tool_call>(\w+)\|(\{.*?\})<\/tool_call>/g;
+					// Match both formats:
+					// 1. <tool_call>name|{args}</tool_call> - with arguments
+					// 2. <tool_use>name</tool_use> or <tool_call>name</tool_call> - without arguments
+					
+					// Try format with arguments first
+					const toolCallWithArgsRegex = /<tool_(?:call|use)>(\w+)\|(\{.*?\})<\/tool_(?:call|use)>/g;
 					let match;
-					while ((match = toolCallRegex.exec(response.content)) !== null) {
+					while ((match = toolCallWithArgsRegex.exec(response.content)) !== null) {
 						try {
 							const toolName = match[1];
 							const args = JSON.parse(match[2]);
 							contentToolCalls.push({ name: toolName, args });
 						} catch (e) {
-							console.error("Failed to parse tool call:", match[0], e);
+							console.error("Failed to parse tool call with args:", match[0], e);
+						}
+					}
+					
+					// Then try format without arguments
+					const toolCallNoArgsRegex = /<tool_(?:call|use)>(\w+)<\/tool_(?:call|use)>/g;
+					while ((match = toolCallNoArgsRegex.exec(response.content)) !== null) {
+						// Skip if we already parsed this as a call with args
+						const toolName = match[1];
+						if (!contentToolCalls.some(tc => tc.name === toolName)) {
+							contentToolCalls.push({ name: toolName, args: {} });
 						}
 					}
 				}
@@ -204,10 +245,12 @@ export abstract class ManualLlama extends Llama {
 				toolCalls = toolCalls || (contentToolCalls.length > 0 ? contentToolCalls : null);
 				
 				if (toolCalls && toolCalls.length > 0) {
-					// STEP 1: Clean content by removing tool_call markers
+					// STEP 1: Clean content by removing tool_call markers (both formats)
 					let cleanContent = response.content;
 					if (contentToolCalls.length > 0) {
-						cleanContent = response.content.replace(/<tool_call>.*?<\/tool_call>/g, '').trim();
+						cleanContent = response.content
+							.replace(/<tool_(?:call|use)>.*?<\/tool_(?:call|use)>/g, '')
+							.trim();
 						console.log("Cleaned content:", cleanContent);
 					}
 					
@@ -224,6 +267,7 @@ export abstract class ManualLlama extends Llama {
 						const tool = this.tools.find((t: any) => t.name === toolCall.name);
 						if (tool) {
 							console.log(`Invoking tool: ${toolCall.name}`, toolCall.args);
+							
 							const result = await tool.invoke(toolCall.args);
 							
 							// For LLM context (internal - raw result)
@@ -238,25 +282,24 @@ export abstract class ManualLlama extends Llama {
 								isExpanded: false
 							};
 							
-							// Get display template and metadata from tool definition
-							const toolDef = ToolsFactory.getToolDefinitionByName(
-								toolCall.name, 
-								this.toolsConfig, 
-								this.rag
-							);
+							// Get display metadata from the tool instance itself
+							const displayMetadata = (tool as any).displayMetadata;
 							
-							if (toolDef) {
+							if (displayMetadata) {
+								// Extract full data once and reuse it
+								const fullData = displayMetadata.extractFullData?.();
+								
 								// Format display message using template
 								const displayMsg = ToolsFactory.formatDisplayMessage(
-									toolDef.displayMetadata.displayTemplate,
+									displayMetadata.displayTemplate,
 									{
 										...toolCall.args,
-										count: toolDef.displayMetadata.extractFullData?.()?.length || 0
+										count: fullData?.length || 0
 									}
 								);
 								toolResultMsg.displayMessage = displayMsg;
-								toolResultMsg.fullData = toolDef.displayMetadata.extractFullData?.();
-								console.log("Tool result display:", displayMsg);
+								toolResultMsg.fullData = fullData;
+								console.log("Tool result display:", displayMsg, "fullData length:", fullData?.length || 0);
 							}
 							
 							resultMessages.push(toolResultMsg);
@@ -338,7 +381,40 @@ export class OpenAILlama extends ManualLlama {
 	}
 
 	protected async invokeTooledModel(messages: any[]): Promise<any> {
-		return await this.tooledModel.invoke(messages);
+		// Collect full response for tool call parsing
+		let fullResponse: any = null;
+		let fullContent = "";
+
+		try {
+			// Stream the response to collect tokens
+			const stream = await this.tooledModel.stream(messages);
+			
+			for await (const chunk of stream) {
+				// The chunk contains the accumulated message
+				if (chunk.content) {
+					const content = chunk.content;
+					// Handle content that might be string or array
+					const contentStr = typeof content === 'string' ? content : (Array.isArray(content) ? content.map((c: any) => c.text || '').join('') : String(content));
+					
+					// Only emit new content (streaming tokens)
+					const newContent = contentStr.slice(fullContent.length);
+					if (newContent) {
+						fullContent = contentStr;
+						if (this.onStreamToken) {
+							this.onStreamToken(newContent);
+						}
+					}
+				}
+				// Keep track of the last chunk which has the full response
+				fullResponse = chunk;
+			}
+		} catch (error) {
+			console.error("Streaming error:", error);
+			// Fallback to non-streaming invoke if streaming fails
+			fullResponse = await this.tooledModel.invoke(messages);
+		}
+
+		return fullResponse;
 	}
 
 	override async test() {
@@ -376,13 +452,25 @@ export class MirrorLlama extends Llama {
 				throw new Error("No user message found");
 			}
 
-			// Simulate a brief delay to make it feel more natural
-			await new Promise(resolve => setTimeout(resolve, 100));
+			// Simulate streaming by emitting tokens with delays
+			const content = lastMessage.content;
+			const words = content.split(/(\s+)/); // Split on whitespace but keep it
+			
+			for (const word of words) {
+				if (word.trim()) {
+					// Emit word with space after
+					if (this.onStreamToken) {
+						this.onStreamToken(word + ' ');
+					}
+					// Simulate delay between tokens
+					await new Promise(resolve => setTimeout(resolve, 50));
+				}
+			}
 
 			this.status({ phase: "idle" });
 			return [{
 				role: "assistant",
-				content: lastMessage.content
+				content: content
 			}];
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
@@ -480,10 +568,11 @@ ${messageTexts}`;
 					try {
 						const data = JSON.parse(line);
 						if (data.response) {
-							fullContent += data.response;
-							// Emit streaming token callback
+							const token = data.response;
+							fullContent += token;
+							// Emit streaming token callback with individual token
 							if (this.onStreamToken) {
-								this.onStreamToken(fullContent);
+								this.onStreamToken(token);
 							}
 						}
 					} catch (e) {
@@ -494,25 +583,43 @@ ${messageTexts}`;
 
 			let content = fullContent;
 
-			// Parse tool calls from response
-			const toolCallRegex = /<tool_call>retrieve\|(\{.*?\})<\/tool_call>/g;
+			// Parse tool calls from response - support both formats:
+			// 1. <tool_call>name|{args}</tool_call> - with arguments
+			// 2. <tool_use>name</tool_use> - without arguments
 			const toolCalls: any[] = [];
+			
+			// Try format with arguments first
+			const toolCallWithArgsRegex = /<tool_(?:call|use)>(\w+)\|(\{.*?\})<\/tool_(?:call|use)>/g;
 			let match;
-
-			while ((match = toolCallRegex.exec(content)) !== null) {
+			while ((match = toolCallWithArgsRegex.exec(content)) !== null) {
 				try {
-					const args = JSON.parse(match[1]);
+					const toolName = match[1];
+					const args = JSON.parse(match[2]);
 					toolCalls.push({
-						name: "retrieve",
+						name: toolName,
 						args: args
 					});
 				} catch (e) {
 					// Skip parsing errors
 				}
 			}
+			
+			// Then try format without arguments
+			const toolCallNoArgsRegex = /<tool_(?:call|use)>(\w+)<\/tool_(?:call|use)>/g;
+			while ((match = toolCallNoArgsRegex.exec(content)) !== null) {
+				const toolName = match[1];
+				if (!toolCalls.some(tc => tc.name === toolName)) {
+					toolCalls.push({
+						name: toolName,
+						args: {}
+					});
+				}
+			}
 
-			// Clean tool call markers from content
-			content = content.replace(toolCallRegex, "").trim();
+			// Clean both tool call formats from content
+			content = content
+				.replace(/<tool_(?:call|use)>.*?<\/tool_(?:call|use)>/g, '')
+				.trim();
 
 			return {
 				content: content,

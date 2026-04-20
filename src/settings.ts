@@ -20,6 +20,7 @@ export interface MirrorSettings {
 export interface ToolsSettings {
 	retrieve: boolean; // RAG-based document retrieval
 	notice: boolean; // Display notices from the agent
+	listMarkdownFiles?: boolean; // List all markdown files in vault
 }
 
 export interface ChatterbotPluginSettings {
@@ -55,5 +56,6 @@ export const DEFAULT_SETTINGS: ChatterbotPluginSettings = {
 	tools: {
 		retrieve: true,
 		notice: true,
+		listMarkdownFiles: true,
 	},
 };

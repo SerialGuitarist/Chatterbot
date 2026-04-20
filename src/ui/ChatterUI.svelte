@@ -18,6 +18,9 @@
 	
 	// Track which tool results are expanded
 	let expandedToolMessages = new Set<number>();
+	
+	// Track message count to only scroll when new messages arrive
+	let lastMessageCount = 0;
 
 	// Initialize chats on mount
 	async function init() {
@@ -39,6 +42,7 @@
 		messages.set(chat.messages);
 		input = chat.draftText || "";
 		expandedToolMessages = new Set();
+		lastMessageCount = chat.messages.length;
 		// Scroll to bottom after component updates
 		await new Promise(resolve => setTimeout(resolve, 0));
 		scrollToBottom();
@@ -50,9 +54,12 @@
 		}
 	}
 
-	// Auto-scroll to bottom when messages change
+	// Auto-scroll to bottom only when new messages arrive
 	afterUpdate(() => {
-		scrollToBottom();
+		if ($messages.length > lastMessageCount) {
+			lastMessageCount = $messages.length;
+			scrollToBottom();
+		}
 	});
 
 	function backToChatList() {
@@ -177,7 +184,8 @@
 		} else {
 			expandedToolMessages.add(index);
 		}
-		expandedToolMessages = expandedToolMessages; // Trigger reactivity
+		// Create a new Set reference to trigger Svelte reactivity
+		expandedToolMessages = new Set(expandedToolMessages);
 	}
 
 	function expandAllToolMessages() {
@@ -186,7 +194,7 @@
 				expandedToolMessages.add(idx);
 			}
 		});
-		expandedToolMessages = expandedToolMessages;
+		expandedToolMessages = new Set(expandedToolMessages);
 	}
 
 	function collapseAllToolMessages() {
@@ -195,7 +203,7 @@
 				expandedToolMessages.delete(idx);
 			}
 		});
-		expandedToolMessages = expandedToolMessages;
+		expandedToolMessages = new Set(expandedToolMessages);
 	}
 
 	// Initialize on component mount
@@ -339,8 +347,16 @@
 									{#if Array.isArray(msg.fullData)}
 										{#each msg.fullData as doc, docIdx}
 											<div class="tool-document">
-												<div class="doc-title">{doc.metadata?.source || `Document ${docIdx + 1}`}</div>
-												<div class="doc-content">{doc.pageContent}</div>
+												{#if doc.pageContent}
+													<!-- RAG document -->
+													<div class="doc-title">{doc.metadata?.source || `Document ${docIdx + 1}`}</div>
+													<div class="doc-content">{doc.pageContent}</div>
+												{:else if doc.path}
+													<!-- File entry -->
+													<div class="doc-title">{doc.path}</div>
+												{:else}
+													<div class="doc-content">{JSON.stringify(doc)}</div>
+												{/if}
 											</div>
 										{/each}
 									{:else}
@@ -660,6 +676,7 @@
 		word-wrap: break-word;
 		user-select: text;
 		cursor: text;
+		flex-shrink: 0;
 	}
 
 	.bubble.user {
