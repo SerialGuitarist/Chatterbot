@@ -1,4 +1,4 @@
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, TFile } from "obsidian";
 import { Document } from "@langchain/core/documents";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { OpenAIEmbeddings } from "@langchain/openai";
@@ -30,12 +30,12 @@ import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
 // -----------------------------------------------------------------------------
 
 interface PersistedChunk {
-	// id: string;				// provided by document spliiter
+	id?: string;				// provided by document spliiter
 	file: string;          	// original markdown path
-	// hash: string;			// checksum of the chunk
+	hash?: string;			// checksum of the chunk
 	embedding: number[];    // embedding vector
 	content: string;		// yahoo
-	// position: number;      	// chunk index inside the file
+	position?: number;      	// chunk index inside the file
 }
 
 
@@ -43,16 +43,23 @@ interface PersistedChunk {
 export class RAGStore {
 	plugin: Plugin;
 	vectorStore: MemoryVectorStore | null = null;
-	embeddings: OpenAIEmbeddings;
+	embeddings: OpenAIEmbeddings | null = null;
 	chunks: PersistedChunk[] = [];
-	// hashFunction: (input: string) => Promise<string>;
+	hashFunction: (input: string) => Promise<string>;
 	persistedFiles: string[] = [];
 	lastUpdate: number = 0;
+	hasValidEmbeddings: boolean = false;
 
 
 	constructor(plugin: Plugin) {
 	// constructor(plugin: Plugin, hashFunction = xxhash) {
 		this.plugin = plugin;
+		
+		// Default hash function (not currently used but keep for compatibility)
+		this.hashFunction = async (input: string) => {
+			// TODO: Implement proper hashing if needed
+			return '';
+		};
 		
 		// Use the appropriate API key based on model type
 		const settings = (plugin as any).settings;
@@ -65,10 +72,14 @@ export class RAGStore {
 		}
 		// For ollama and mirror, apiKey remains empty and embeddings will be handled below
 		
-		this.embeddings = new OpenAIEmbeddings({
-			model: "text-embedding-3-large",
-			apiKey: apiKey || undefined // Only set if not empty
-		});
+		// Only initialize embeddings if we have a valid API key
+		if (apiKey && apiKey.trim() !== '') {
+			this.embeddings = new OpenAIEmbeddings({
+				model: "text-embedding-3-large",
+				apiKey: apiKey
+			});
+			this.hasValidEmbeddings = true;
+		}
 		// this.hashFunction = hashFunction;
 	}
 
@@ -82,7 +93,13 @@ export class RAGStore {
 		this.persistedFiles = data?.persistedFiles ?? [] // of type [string] denoting file paths
 		console.log("RAG: loaded", this.chunks.length, "chunks");
 
-		this.vectorStore = new MemoryVectorStore(this.embeddings);
+		// Only initialize vector store if embeddings are available
+		if (!this.hasValidEmbeddings) {
+			console.log("RAG: Embeddings not available - skipping vector store initialization");
+			return;
+		}
+
+		this.vectorStore = new MemoryVectorStore(this.embeddings!);
 
 		if (this.chunks.length === 0) return;
 
@@ -115,6 +132,11 @@ export class RAGStore {
 
 	// update index by embedding only changed chunks
 	async updateFromVault() {
+		// Check if embeddings are available
+		if (!this.hasValidEmbeddings) {
+			throw new Error("Cannot update embeddings - OpenAI API key is not configured. Please set your API key in Chatterbot settings.");
+		}
+
 		// possible changes:
 		// - normal editing => captured by last modified => delete chunks from this file and regenerate them from the file
 		// - created file => captured by last modified => delete chunks from this file and regenerate them from the file
@@ -201,7 +223,7 @@ export class RAGStore {
 			for (const chunkText of splits) {
 				// we dont care if this was modified or newly created
 				// embed new chunk
-				const embedding = await this.embeddings.embedQuery(chunkText);
+				const embedding = await this.embeddings!.embedQuery(chunkText);
 
 				newChunks.push({
 					file: file.path,
@@ -216,7 +238,7 @@ export class RAGStore {
 		new Notice("5/6: Rebuilding vector store from " + this.chunks.length + " chunks.");
 
 		// rebuild vector store
-		this.vectorStore = new MemoryVectorStore(this.embeddings);
+		this.vectorStore = new MemoryVectorStore(this.embeddings!);
 		await this.vectorStore.addVectors(
 			this.chunks.map(c => c.embedding),
 			this.chunks.map(
@@ -244,6 +266,9 @@ export class RAGStore {
 
 	// turn into a retriever
 	getRetriever(k = 5) {
+		if (!this.hasValidEmbeddings) {
+			throw new Error("RAG retriever not available - OpenAI API key is not configured. Please set your API key in Chatterbot settings.");
+		}
 		if (!this.vectorStore)
 			throw new Error("RAG not loaded — call rag.load() first");
 		return this.vectorStore.asRetriever({
@@ -300,7 +325,7 @@ export class RAGStore {
 				} else {
 					// we dont care if this was modified or newly created
 					// embed new chunk
-					const embedding = await this.embeddings.embedQuery(chunkText);
+					const embedding = await this.embeddings!.embedQuery(chunkText);
 
 					newChunks.push({
 						id: crypto.randomUUID(),
@@ -322,7 +347,7 @@ export class RAGStore {
 		this.chunks = newChunks;
 
 		// rebuild vector store
-		this.vectorStore = new MemoryVectorStore(this.embeddings);
+		this.vectorStore = new MemoryVectorStore(this.embeddings!);
 		await this.vectorStore.addVectors(
 			this.chunks.map(c => c.embedding),
 			this.chunks.map(

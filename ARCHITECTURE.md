@@ -13,7 +13,7 @@ Llama (base - simple chat)
 
 ### 1. **Llama** (Base Class - Simple Chat)
 - No RAG, no tools - just basic LLM chat
-- Takes `apiKey` and `onStatus` callback (no RAG parameter)
+- Takes `apiKey` and `onStatus` callback
 - Handles message formatting and model invocation
 - Status notifications for UI updates
 - All RAG/tool concerns removed

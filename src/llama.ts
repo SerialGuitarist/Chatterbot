@@ -115,13 +115,12 @@ export abstract class ManualLlama extends Llama {
 		this.status({ phase: "thinking", detail: "Setting up model"});
 
 		// Build system message with tool descriptions
-		const toolDescriptions = ToolsFactory.getToolDescriptions(this.toolsConfig);
+		const toolInstructions = ToolsFactory.getToolInstructions(this.toolsConfig, this.rag);
+		
 		this.systemMessage = {
 			role: "system",
 			content: `You are ChatterBot, a helpful AI assistant attached to an Obsidian Vault, a note-taking knowledge base. Your primary role is to help users with questions about this vault.${
-				toolDescriptions ? " " + toolDescriptions : ""
-			}${
-				this.toolsConfig.retrieve ? " If a user asks a question about something you're unsure about, use the retrieve tool to query the vault for relevant context documents." : ""
+				toolInstructions ? " " + toolInstructions : ""
 			}`
 		};
 
@@ -173,10 +172,49 @@ export abstract class ManualLlama extends Llama {
 
 				const response = await this.invokeTooledModel(messages);
 
-				if (response.tool_calls && response.tool_calls.length > 0) {
-					for (const toolCall of response.tool_calls) {
+				// Debug: log the response structure
+				console.log("Agent response:", {
+					content: response.content,
+					tool_calls: response.tool_calls,
+					additional_kwargs: response.additional_kwargs
+				});
+
+				// Check for tool_calls in both response and additional_kwargs
+				let toolCalls = response.tool_calls || response.additional_kwargs?.tool_calls;
+				
+				// If no structured tool_calls, try parsing from content string (manual format)
+				let contentToolCalls: any[] = [];
+				if (!toolCalls && response.content && typeof response.content === 'string') {
+					const toolCallRegex = /<tool_call>(\w+)\|(\{.*?\})<\/tool_call>/g;
+					let match;
+					while ((match = toolCallRegex.exec(response.content)) !== null) {
+						try {
+							const toolName = match[1];
+							const args = JSON.parse(match[2]);
+							contentToolCalls.push({
+								name: toolName,
+								args: args
+							});
+						} catch (e) {
+							console.error("Failed to parse tool call:", match[0], e);
+						}
+					}
+				}
+				
+				toolCalls = toolCalls || (contentToolCalls.length > 0 ? contentToolCalls : null);
+				
+				if (toolCalls && toolCalls.length > 0) {
+					// Remove tool call markers from content if they were parsed from the string
+					let cleanContent = response.content;
+					if (contentToolCalls.length > 0) {
+						cleanContent = response.content.replace(/<tool_call>.*?<\/tool_call>/g, '').trim();
+						console.log("Cleaned content:", cleanContent);
+					}
+					
+					for (const toolCall of toolCalls) {
 						const tool = this.tools.find((t: any) => t.name === toolCall.name);
 						if (tool) {
+							console.log(`Invoking tool: ${toolCall.name} with args:`, toolCall.args);
 							const result = await tool.invoke(toolCall.args);
 							contextStr += `Output of \`${toolCall.name}\` tool: ${result}\n---\n`;
 						}
@@ -238,6 +276,7 @@ export class OpenAILlama extends ManualLlama {
 			temperature: 0.7
 		};
 		this.model = new ChatOpenAI(config);
+		console.log("OpenAI tools being bound:", this.tools.map((t: any) => ({ name: t.name, description: t.description })));
 		this.tooledModel = this.model!.bindTools(this.tools);
 	}
 

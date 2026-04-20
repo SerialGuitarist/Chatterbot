@@ -184,7 +184,7 @@ export default class ChatterbotPlugin extends Plugin {
 	}
 	
 
-	async askLlama(messages) {
+	async askLlama(messages: any) {
 		let mainResult = await this.llama.ask(messages)
 		// console.log("mainresult:", mainResult);
 		return mainResult;
@@ -195,7 +195,9 @@ export default class ChatterbotPlugin extends Plugin {
 	}
 
 	async test() {
-		this.llama.test();
+		console.log("Testing test function called");
+		new Notice('This is a notice!');
+		// this.llama.test();
 		// const retriever = this.rag.getRetriever();
 		// const output = await retriever.invoke("Who is Governance of Iron");
 		// console.log(output);
@@ -216,18 +218,27 @@ class ChatterBotSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		// Model Selection Section
-		this.addModelSection(containerEl);
+		const modelSection = containerEl.createDiv({ cls: 'setting-section' });
+		this.addModelSection(modelSection);
 
 		// Model-specific Configuration
-		this.addOpenAISection(containerEl);
-		this.addAnthropicSection(containerEl);
-		this.addOllamaSection(containerEl);
+		const configSection = containerEl.createDiv({ cls: 'setting-section' });
+		this.addOpenAISection(configSection);
+		this.addAnthropicSection(configSection);
+		this.addOllamaSection(configSection);
 
 		// Embeddings Section
-		this.addEmbeddingsSection(containerEl);
+		const embeddingsSection = containerEl.createDiv({ cls: 'setting-section' });
+		this.addEmbeddingsSection(embeddingsSection);
+
+		// Tools Section
+		const toolsSection = containerEl.createDiv({ cls: 'setting-section' });
+		this.addToolsSection(toolsSection);
 	}
 
 	private addModelSection(containerEl: HTMLElement): void {
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Model Selection' });
+
 		new Setting(containerEl)
 			.setName('Select Model')
 			.setDesc('Choose which LLM provider to use')
@@ -247,8 +258,7 @@ class ChatterBotSettingTab extends PluginSettingTab {
 	private addOpenAISection(containerEl: HTMLElement): void {
 		if (this.plugin.settings.modelType !== 'openai') return;
 
-		const heading = containerEl.createEl('h3', { text: 'OpenAI Configuration' });
-		heading.style.marginTop = '20px';
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'OpenAI Configuration' });
 
 		new Setting(containerEl)
 			.setName('API Key')
@@ -265,8 +275,7 @@ class ChatterBotSettingTab extends PluginSettingTab {
 	private addAnthropicSection(containerEl: HTMLElement): void {
 		if (this.plugin.settings.modelType !== 'anthropic') return;
 
-		const heading = containerEl.createEl('h3', { text: 'Anthropic Configuration' });
-		heading.style.marginTop = '20px';
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Anthropic Configuration' });
 
 		new Setting(containerEl)
 			.setName('API Key')
@@ -283,8 +292,7 @@ class ChatterBotSettingTab extends PluginSettingTab {
 	private addOllamaSection(containerEl: HTMLElement): void {
 		if (this.plugin.settings.modelType !== 'ollama') return;
 
-		const heading = containerEl.createEl('h3', { text: 'Ollama Configuration' });
-		heading.style.marginTop = '20px';
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Ollama Configuration' });
 
 		new Setting(containerEl)
 			.setName('Base URL')
@@ -310,8 +318,7 @@ class ChatterBotSettingTab extends PluginSettingTab {
 	}
 
 	private addEmbeddingsSection(containerEl: HTMLElement): void {
-		const heading = containerEl.createEl('h3', { text: 'Embeddings' });
-		heading.style.marginTop = '20px';
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Embeddings' });
 
 		new Setting(containerEl)
 			.setName('Update Embeddings')
@@ -339,5 +346,29 @@ class ChatterBotSettingTab extends PluginSettingTab {
 			lastUpdateEl.style.fontSize = '0.85em';
 			lastUpdateEl.style.marginTop = '-10px';
 		}
+	}
+
+	private addToolsSection(containerEl: HTMLElement): void {
+		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Agent Tools' });
+
+		new Setting(containerEl)
+			.setName('Retrieve from Vault')
+			.setDesc('Enable RAG-based document retrieval from your vault')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.tools.retrieve)
+				.onChange(async (value) => {
+					this.plugin.settings.tools.retrieve = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Notice')
+			.setDesc('Enable the agent to display notices/alerts')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.tools.notice)
+				.onChange(async (value) => {
+					this.plugin.settings.tools.notice = value;
+					await this.plugin.saveSettings();
+				}));
 	}
 }

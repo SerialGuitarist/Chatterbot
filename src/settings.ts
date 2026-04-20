@@ -19,7 +19,7 @@ export interface MirrorSettings {
 
 export interface ToolsSettings {
 	retrieve: boolean; // RAG-based document retrieval
-	// Future tools can be added here
+	notice: boolean; // Display notices from the agent
 }
 
 export interface ChatterbotPluginSettings {
@@ -54,5 +54,6 @@ export const DEFAULT_SETTINGS: ChatterbotPluginSettings = {
 	},
 	tools: {
 		retrieve: true,
+		notice: true,
 	},
 };

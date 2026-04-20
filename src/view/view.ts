@@ -10,7 +10,8 @@ import type ChatterbotPlugin from '../main';
 export const VIEW_TYPE = 'chatterbot-view';
 
 export class ChatterbotView extends ItemView {
-	chatterUI: ReturnType<typeof ChatterUI> | undefined; 
+	chatterUI: ReturnType<typeof ChatterUI> | undefined;
+	plugin: ChatterbotPlugin;
 	unsubscribe: () => void;
 	abortController: AbortController | null = null;
 
@@ -174,7 +175,7 @@ export class ChatterbotView extends ItemView {
 		];
 		// console.log(chatHistory);
 		const result = await this.plugin.askLlama(chatHistory);
-		const reply = result.reply;
+		const reply = typeof result.reply === 'string' ? result.reply : JSON.stringify(result.reply);
 
 		// TODO: error handling here
 		messages.update(m => [...m, {role: "assistant", content: reply}]);
