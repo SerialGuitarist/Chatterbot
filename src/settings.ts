@@ -17,14 +17,22 @@ export interface MirrorSettings {
 	// Mirror provider doesn't need any configuration
 }
 
+export interface ToolsSettings {
+	retrieve: boolean; // RAG-based document retrieval
+	// Future tools can be added here
+}
+
 export interface ChatterbotPluginSettings {
 	modelType: ModelType;
 	openai: OpenAISettings;
 	anthropic: AnthropicSettings;
-	ollama: OllamaSettings;	mirror: MirrorSettings;	embeddings: {
+	ollama: OllamaSettings;
+	mirror: MirrorSettings;
+	embeddings: {
 		enabled: boolean;
 		lastUpdated?: number;
 	};
+	tools: ToolsSettings;
 }
 
 export const DEFAULT_SETTINGS: ChatterbotPluginSettings = {
@@ -38,8 +46,13 @@ export const DEFAULT_SETTINGS: ChatterbotPluginSettings = {
 	ollama: {
 		baseUrl: 'http://localhost:11434',
 		model: 'llama2',
-	},	mirror: {},	embeddings: {
+	},
+	mirror: {},
+	embeddings: {
 		enabled: false,
 		lastUpdated: undefined,
+	},
+	tools: {
+		retrieve: true,
 	},
 };

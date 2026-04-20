@@ -6,6 +6,7 @@ import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages
 // import { tool } from "langchain";
 import { tool } from "@langchain/core/tools";
 import * as z from "zod";
+import { ToolsFactory, type ToolsConfig } from "./tools/toolsLibrary";
 
 
 function toLC(msg: any) {
@@ -24,12 +25,12 @@ export type LlamaStatus =
 
 export class Llama {
 	model: ChatOpenAI | null;
-	rag: any; // RAGStore
 	onStatus?: (status: LlamaStatus) => void;
 	onStreamToken?: (token: string) => void; // Callback for streaming tokens
 	systemMessage: any = null;
+	abortSignal?: AbortSignal; // Signal to abort ongoing requests
 	
-	constructor(apiKey: string, rag: any = null, onStatus?: (s: LlamaStatus) => void, skipModelInit: boolean = false) {
+	constructor(apiKey: string, onStatus?: (s: LlamaStatus) => void, skipModelInit: boolean = false) {
 		if (skipModelInit) {
 			// For OllamaLlama and other providers that don't use ChatOpenAI
 			this.model = null;
@@ -42,7 +43,6 @@ export class Llama {
 			};
 			this.model = new ChatOpenAI(config);
 		}
-		this.rag = rag;
 		this.onStatus = onStatus;
 		this.systemMessage =  {
 			role: "system",
@@ -59,27 +59,9 @@ export class Llama {
 
 	async ask(messages: any) {
 		try {
-			// my attempts to decouple this code as much as possible
-			// has lead me down some dark dark paths such as this code block
-
-			// 1. get retriever
-			this.status({ phase: "retrieving" });
-			const retriever = this.rag.getRetriever();
-
-			// 2. get last user query
-			const lastUserMessage = messages[messages.length - 1].content;
-
-			// 3. use that to get the context documents
-			this.status({ phase: "thinking", detail: "Constructing context" });
-			const output = await retriever.invoke(lastUserMessage);
-			const contexts = output.map((doc: any) => doc.pageContent );
-			const context = {role: "system", content: "Context: " + contexts.join("\n---\n")};
-
-			// 4. append that to the messages
 			const augmentedMessages = [
 				this.systemMessage,
-				...messages,
-				context
+				...messages
 			].map(toLC);
 
 			this.status({ phase: "calling_model"});
@@ -88,7 +70,7 @@ export class Llama {
 
 			return {
 				reply: result.content,
-				context: context
+				context: { role: "system", content: "" }
 			};
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
@@ -104,77 +86,100 @@ export class Llama {
 
 }
 
-// agentic implementation doesnt work on obsidian for some reason
-// need to implement tool calls manually
-export class ManualLlama extends Llama {
+/**
+ * ManualLlama - Base class for manual tool use implementation
+ * Agentic tool use with @langchain/langgraph doesn't work in Obsidian due to Node.js built-in
+ * dependencies, so we implement the agent loop manually for provider-agnostic tool support.
+ * 
+ * RAG and tools are specific to ManualLlama - the base Llama class provides simple chat.
+ * Subclasses should implement initializeModel() to set up their specific LLM provider.
+ */
+export abstract class ManualLlama extends Llama {
 	tooledModel: any;
-	retrieveTool: any;
+	tools: any[] = [];
+	rag: any; // RAGStore
+	toolsConfig: ToolsConfig;
 
 	constructor(
 		apiKey: string,
 		rag: any = null,
-		onStatus?: (s: LlamaStatus) => void
+		onStatus?: (s: LlamaStatus) => void,
+		toolsConfig?: ToolsConfig
 	) {
-		super(apiKey, rag, onStatus);
+		// Skip default OpenAI init - providers will set up their own model
+		super(apiKey, onStatus, true);
+		this.apiKey = apiKey;
+		this.rag = rag;
+		this.toolsConfig = toolsConfig || { retrieve: true };
+		
 		this.status({ phase: "thinking", detail: "Setting up model"});
 
-
+		// Build system message with tool descriptions
+		const toolDescriptions = ToolsFactory.getToolDescriptions(this.toolsConfig);
 		this.systemMessage = {
 			role: "system",
-			content: "You are ChatterBot, a helpful AI assistant attached to an Obsidian Vault, a note-taking knowledge base. Your primary role is to help users with questions about this vault. If a user asks a question about something you\'re unsure about, you MUST use the \`retrieve\` tool to query the vault for relevant context documents."
+			content: `You are ChatterBot, a helpful AI assistant attached to an Obsidian Vault, a note-taking knowledge base. Your primary role is to help users with questions about this vault.${
+				toolDescriptions ? " " + toolDescriptions : ""
+			}${
+				this.toolsConfig.retrieve ? " If a user asks a question about something you're unsure about, use the retrieve tool to query the vault for relevant context documents." : ""
+			}`
 		};
 
-		this.retrieveTool = tool(
-			async ({ query } : { query: string }) => {
-				this.status({ phase: "thinking", detail: "Retrieving: " + query  });
-				console.log("Retrieving: " + query);
-				const retriever = this.rag.getRetriever();
-				const documents = await retriever.invoke(query);
-				const collatedDocuments = documents.map(d => d.pageContent).join("\n---\n");
-
-				// -- testing the effectiveness of having the llm restructure the output --
-				// const messages = [{"role": "user", "content": "Summarize the following: " + collatedDocuments}].map(toLC);
-				// const response = await this.model.invoke(messages)
-				// return response.content;
-				// -- as it turns out, doesn't add a lot while making it much slower
-
-				return collatedDocuments;
-
-			}, 
-			{
-				name: "retrieve",
-				description: "Retrieve relevant documents from Obsidian vault",
-				schema: z.object({
-					query: z.string().describe("Search query for the vault")
-				}),
-			}
-		);
-
-		this.tooledModel = this.model!.bindTools([this.retrieveTool]);
+		this.initializeTools();
+		this.initializeModel();
 		this.status({ phase: "idle"});
 	}
 
+	apiKey: string;
 
+	/**
+	 * Initialize tools based on configuration
+	 */
+	private initializeTools() {
+		this.tools = ToolsFactory.createTools(
+			this.toolsConfig,
+			this.rag,
+			(s: any) => this.status(s)
+		);
+	}
+
+	/**
+	 * Provider-specific model initialization
+	 * Subclasses must implement this to set up their model and tooledModel
+	 */
+	protected abstract initializeModel(): void;
+
+	/**
+	 * Provider-specific tool invocation
+	 * Subclasses must implement how to invoke a model with tools
+	 */
+	protected abstract invokeTooledModel(messages: any[]): Promise<any>;
+
+	/**
+	 * Core agent loop - generic for all providers that support manual tool use
+	 */
 	override async ask(originalMessages: any) {
 		try {
 			this.status({ phase: "thinking", detail: "Agent reasoning" });
-			let context = "";
+			let contextStr = "";
 
+			// Agent loop with max 5 iterations to prevent infinite loops
 			for (let i = 0; i < 5; i++) {
 				let messages = [
 					this.systemMessage,
 					...originalMessages,
-					{role: "system", content: "Context: " + context}
+					{role: "system", content: contextStr ? "Context: " + contextStr : ""}
 				].map(toLC);
 
-				const response = await this.tooledModel.invoke(messages)
+				const response = await this.invokeTooledModel(messages);
 
-				if (response.tool_calls) {
+				if (response.tool_calls && response.tool_calls.length > 0) {
 					for (const toolCall of response.tool_calls) {
-						// console.log(toolCall);
-						let query = toolCall.args.query;
-						context += "Output of \`retrieve\` tool with query \"" + query + "\": " + await this.retrieveTool.invoke({ query }) + "\n---\n";
-						// console.log(context);
+						const tool = this.tools.find((t: any) => t.name === toolCall.name);
+						if (tool) {
+							const result = await tool.invoke(toolCall.args);
+							contextStr += `Output of \`${toolCall.name}\` tool: ${result}\n---\n`;
+						}
 					}
 					this.status({ phase: "thinking", detail: "Agent reasoning with retrieved context" });
 					continue;
@@ -183,23 +188,23 @@ export class ManualLlama extends Llama {
 				this.status({ phase: "idle" });
 				return {
 					reply: response.content,
-					context: context
+					context: { role: "system", content: contextStr ? "Context: " + contextStr : "" }
 				};
 			}
 
+			// Fallback: if we exhausted iterations, do one final invocation without tools
 			let messages = [
 				this.systemMessage,
 				...originalMessages,
-				{role: "system", content: "Context: " + context}
+				{role: "system", content: contextStr ? "Context: " + contextStr : ""}
 			].map(toLC);
 
 			const response = await this.model!.invoke(messages)
 			this.status({ phase: "idle" });
 			return {
 				reply: response.content,
-				context: context
+				context: { role: "system", content: contextStr ? "Context: " + contextStr : "" }
 			};
-
 
 		} catch (err) {
 			this.status({ phase: "error", message: String(err) });
@@ -208,22 +213,44 @@ export class ManualLlama extends Llama {
 	}
 
 	override async test() {
-		// Step 1: Model generates tool calls
-		// const messages = [{"role": "user", "content": "What is Governance of Iron's relation with Public Universal Friend"}].map(toLC);
-		const messages = [{"role": "user", "content": "Wazzap"}].map(toLC);
+		console.log("Manual tool use test");
+	}
+}
 
-		const response = await this.model!.invoke(messages)
-
-		// Step 2: Execute tools and collect results
-		for (const toolCall of response.tool_calls) {
-			console.log(toolCall);
-		}
-
-		console.log(response);
+/**
+ * OpenAILlama - OpenAI provider with manual tool use
+ * Uses ChatOpenAI with bindTools() for structured tool invocation
+ */
+export class OpenAILlama extends ManualLlama {
+	constructor(
+		apiKey: string,
+		rag: any = null,
+		onStatus?: (s: LlamaStatus) => void,
+		toolsConfig?: any
+	) {
+		super(apiKey, rag, onStatus, toolsConfig);
 	}
 
+	protected initializeModel(): void {
+		const config: any = {
+			apiKey: this.apiKey,
+			model: "gpt-4o-mini",
+			temperature: 0.7
+		};
+		this.model = new ChatOpenAI(config);
+		this.tooledModel = this.model!.bindTools(this.tools);
+	}
 
+	protected async invokeTooledModel(messages: any[]): Promise<any> {
+		return await this.tooledModel.invoke(messages);
+	}
 
+	override async test() {
+		console.log("OpenAI tool use test");
+		const messages = [{"role": "user", "content": "Test message"}].map(toLC);
+		const response = await this.model!.invoke(messages);
+		console.log("Response:", response.content);
+	}
 }
 
 /**
@@ -233,10 +260,9 @@ export class ManualLlama extends Llama {
 export class MirrorLlama extends Llama {
 	constructor(
 		apiKey: string,
-		rag: any = null,
 		onStatus?: (s: LlamaStatus) => void
 	) {
-		super(apiKey, rag, onStatus);
+		super(apiKey, onStatus);
 		this.systemMessage = {
 			role: "system",
 			content: "You are a mirror. You echo back whatever the user sends, nothing more."
@@ -260,7 +286,7 @@ export class MirrorLlama extends Llama {
 			this.status({ phase: "idle" });
 			return {
 				reply: lastMessage.content,
-				context: ""
+				context: { role: "system", content: "" }
 			};
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
@@ -276,8 +302,9 @@ export class MirrorLlama extends Llama {
 /**
  * Ollama provider - uses local Ollama instance
  * Handles streaming responses from Ollama's /api/generate endpoint
+ * Extends ManualLlama to support tool use (retrieve) with manual implementation
  */
-export class OllamaLlama extends Llama {
+export class OllamaLlama extends ManualLlama {
 	baseUrl: string;
 	ollamaModel: string;
 
@@ -286,64 +313,62 @@ export class OllamaLlama extends Llama {
 		rag: any = null,
 		onStatus?: (s: LlamaStatus) => void,
 		baseUrl?: string,
-		model?: string
+		model?: string,
+		toolsConfig?: any
 	) {
-		// Skip ChatOpenAI initialization - we use HTTP calls directly
-		super(apiKey, rag, onStatus, true);
+		super(apiKey, rag, onStatus, toolsConfig);
 		this.baseUrl = baseUrl || "http://localhost:11434";
 		this.ollamaModel = model || "llama2";
 	}
 
-	override async ask(messages: any) {
+	protected initializeModel(): void {
+		// Ollama doesn't use ChatOpenAI - we'll handle tool invocation specially
+		this.model = null;
+		this.tooledModel = null;
+	}
+
+	protected async invokeTooledModel(messages: any[]): Promise<any> {
+		// Build prompt from messages with tool definitions
+		const messageTexts = messages.map(m => {
+			const role = m._type === "system" ? "system" : (m._type === "ai" ? "assistant" : "user");
+			return `${role}: ${m.content}`;
+		}).join("\n");
+
+		const systemPrompt = `You are a helpful assistant that can use tools. You have access to the following tool:
+- retrieve: Retrieve relevant documents from Obsidian vault. Use this when you need context for the user's question.
+
+When you want to use the retrieve tool, respond with: <tool_call>retrieve|{"query": "your search query"}</tool_call>
+Then wait for the tool output before continuing.`;
+
+		const fullPrompt = `${systemPrompt}
+
+${messageTexts}`;
+
 		try {
-			this.status({ phase: "retrieving" });
-			
-			// Get last user query
-			const lastUserMessage = messages[messages.length - 1].content;
-			let context = "";
-
-			// Try to retrieve context, but gracefully skip if embeddings aren't available
-			try {
-				const retriever = this.rag.getRetriever();
-				this.status({ phase: "thinking", detail: "Constructing context" });
-				const output = await retriever.invoke(lastUserMessage);
-				const contexts = output.map((doc: any) => doc.pageContent);
-				context = contexts.join("\n---\n");
-			} catch (retrievalError: any) {
-				// If retrieval fails (e.g., no embeddings configured), continue without context
-				console.warn("Context retrieval failed, continuing without context:", retrievalError.message);
-				this.status({ phase: "thinking", detail: "No context available" });
-			}
-
-			// Build prompt with context and system message
-			const fullPrompt = `${this.systemMessage.content}
-
-${context ? `Context from vault:\n${context}\n` : ''}
-
-User question: ${lastUserMessage}`;
-
-			this.status({ phase: "calling_model" });
-			
-			// Call Ollama via HTTP with streaming enabled
-			const response = await fetch(`${this.baseUrl}/api/generate`, {
+			const fetchInit: any = {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					model: this.ollamaModel,
 					prompt: fullPrompt,
-					stream: true, // Enable streaming
+					stream: true,  // Enable streaming
 				}),
-			});
+			};
+
+			// Add abort signal if one was set
+			if (this.abortSignal) {
+				fetchInit.signal = this.abortSignal;
+			}
+
+			const response = await fetch(`${this.baseUrl}/api/generate`, fetchInit);
 
 			if (!response.ok) {
 				const errorText = await response.text();
-				throw new Error(`Ollama API error (${response.status}): ${errorText || response.statusText}. Model: ${this.ollamaModel}, URL: ${this.baseUrl}/api/generate`);
+				throw new Error(`Ollama API error (${response.status}): ${errorText}`);
 			}
 
 			// Handle streaming response
-			let fullReply = "";
+			let fullContent = "";
 			const reader = response.body!.getReader();
 			const decoder = new TextDecoder();
 
@@ -359,10 +384,10 @@ User question: ${lastUserMessage}`;
 					try {
 						const data = JSON.parse(line);
 						if (data.response) {
-							fullReply += data.response;
-							// Emit streaming token for real-time updates
+							fullContent += data.response;
+							// Emit streaming token callback
 							if (this.onStreamToken) {
-								this.onStreamToken(fullReply);
+								this.onStreamToken(fullContent);
 							}
 						}
 					} catch (e) {
@@ -371,36 +396,66 @@ User question: ${lastUserMessage}`;
 				}
 			}
 
-			this.status({ phase: "idle" });
+			let content = fullContent;
+
+			// Parse tool calls from response
+			const toolCallRegex = /<tool_call>retrieve\|(\{.*?\})<\/tool_call>/g;
+			const toolCalls: any[] = [];
+			let match;
+
+			while ((match = toolCallRegex.exec(content)) !== null) {
+				try {
+					const args = JSON.parse(match[1]);
+					toolCalls.push({
+						name: "retrieve",
+						args: args
+					});
+				} catch (e) {
+					// Skip parsing errors
+				}
+			}
+
+			// Clean tool call markers from content
+			content = content.replace(toolCallRegex, "").trim();
 
 			return {
-				reply: fullReply,
-				context: { role: "system", content: "Context: " + context }
+				content: content,
+				tool_calls: toolCalls.length > 0 ? toolCalls : undefined
 			};
 		} catch (error) {
-			this.status({ phase: "error", message: String(error) });
-			throw error;
+			throw new Error(`Failed to invoke Ollama model: ${error}`);
 		}
+	}
+
+	override async ask(originalMessages: any) {
+		// Use ManualLlama's agent loop but with Ollama's API
+		return super.ask(originalMessages);
 	}
 
 	override async test() {
 		try {
 			this.status({ phase: "calling_model" });
-			const response = await fetch(`${this.baseUrl}/api/generate`, {
+			
+			const fetchInit: any = {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					model: this.ollamaModel,
 					prompt: "Hello, what is 2+2?",
 					stream: false,
 				}),
-			});
+			};
+
+			// Add abort signal if one was set
+			if (this.abortSignal) {
+				fetchInit.signal = this.abortSignal;
+			}
+
+			const response = await fetch(`${this.baseUrl}/api/generate`, fetchInit);
 
 			if (!response.ok) {
 				const errorText = await response.text();
-				throw new Error(`Ollama API error (${response.status}): ${errorText || response.statusText}. Make sure Ollama is running and the model "${this.ollamaModel}" exists.`);
+				throw new Error(`Ollama API error (${response.status}): ${errorText}. Make sure Ollama is running and model "${this.ollamaModel}" exists.`);
 			}
 
 			const data = await response.json();

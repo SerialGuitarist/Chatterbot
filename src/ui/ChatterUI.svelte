@@ -318,10 +318,15 @@
 			></textarea>
 
 			<div class="buttons">
+				<button 
+					on:click={view.halt}
+					disabled={$status.phase === "idle"}
+					title={$status.phase === "idle" ? "No model running" : "Stop the model"}
+				>
+					Halt
+				</button>
 				<button on:click={view.test}>Test</button>
-				<button on:click={view.summarize}>Summarize</button>
-				<button on:click={view.clear}>Clear Conversation</button>
-				<button on:click={view.update}>Update from vault</button>
+				<button on:click={view.clear}>Clear</button>
 			</div>
 		</div>
 	{/if}

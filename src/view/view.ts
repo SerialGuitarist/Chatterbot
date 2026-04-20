@@ -3,7 +3,7 @@ import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 import  ChatterUI from '../ui/ChatterUI.svelte';
 import { mount, unmount } from 'svelte';
 
-import { messages } from "../chat";
+import { messages, status } from "../chat";
 import { get } from "svelte/store";
 import type ChatterbotPlugin from '../main';
 
@@ -12,6 +12,7 @@ export const VIEW_TYPE = 'chatterbot-view';
 export class ChatterbotView extends ItemView {
 	chatterUI: ReturnType<typeof ChatterUI> | undefined; 
 	unsubscribe: () => void;
+	abortController: AbortController | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: ChatterbotPlugin) {
 		super(leaf);
@@ -77,6 +78,12 @@ export class ChatterbotView extends ItemView {
 	// }
 	llama = async () => {
 		try {
+			// Create abort controller for this request and store on llama instance
+			const abortController = new AbortController();
+			const llama = (this as any).plugin.llama;
+			(llama as any).abortController = abortController;
+			llama.abortSignal = abortController.signal;
+			
 			// console.log("calling backend");
 			// const result = await this.plugin.askLlama([{ role: "user", content: "Hey!" }]);
 			const chatHistory = get(messages);
@@ -86,7 +93,6 @@ export class ChatterbotView extends ItemView {
 			messages.update(m => [...m, {role: "assistant", content: ""}]);
 			
 			// Set up streaming callback
-			const llama = (this as any).plugin.llama;
 			llama.onStreamToken = (token: string) => {
 				// Update the last (assistant) message with the accumulated response
 				messages.update(m => {
@@ -101,8 +107,10 @@ export class ChatterbotView extends ItemView {
 			const result = await (this as any).plugin.askLlama(chatHistory);
 			const reply = result.reply;
 			
-			// Clean up callback
+			// Clean up callback and abort signal
 			llama.onStreamToken = undefined;
+			llama.abortSignal = undefined;
+			(llama as any).abortController = null;
 			
 			// Update with final response (in case streaming wasn't complete)
 			messages.update(m => {
@@ -117,9 +125,35 @@ export class ChatterbotView extends ItemView {
 			await (this as any).plugin.chatStore.addMessageToCurrentChat("assistant", reply);
 			// console.log("LLM result:", result);
 		} catch (error) {
-			console.error("Error during llama call:", error);
-			// Remove the empty message if something went wrong
-			messages.update(m => m.slice(0, -1));
+			const isAbort = error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"));
+			if (isAbort) {
+				console.log("Model execution halted by user");
+				// Keep the partial text that was already streamed and save it
+				const currentMessages = get(messages);
+				if (currentMessages.length > 0) {
+					const lastMessage = currentMessages[currentMessages.length - 1];
+					if (lastMessage.role === "assistant" && lastMessage.content) {
+						await (this as any).plugin.chatStore.addMessageToCurrentChat("assistant", lastMessage.content);
+					}
+				}
+				status.set({ phase: "idle" });
+			} else {
+				console.error("Error during llama call:", error);
+				// Remove the empty message only for non-abort errors
+				messages.update(m => m.slice(0, -1));
+			}
+		} finally {
+			const llama = (this as any).plugin.llama;
+			llama.abortSignal = undefined;
+			(llama as any).abortController = null;
+		}
+	}
+
+	halt = async () => {
+		const llama = (this as any).plugin.llama;
+		if ((llama as any).abortController) {
+			(llama as any).abortController.abort();
+			(llama as any).abortController = null;
 		}
 	}
 

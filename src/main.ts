@@ -4,7 +4,7 @@ import { Plugin, Notice, WorkspaceLeaf } from "obsidian";
 import { App, Editor, MarkdownView, Modal, PluginSettingTab, Setting } from 'obsidian';
 
 import { ChatterbotView, VIEW_TYPE } from './view/view';
-import { Llama, ManualLlama, MirrorLlama, OllamaLlama } from './llama';
+import { Llama, OpenAILlama, MirrorLlama, OllamaLlama } from './llama';
 import { RAGStore } from "./ragStore";
 import { status } from "./chat";
 import type { ChatterbotPluginSettings, ModelType } from './settings';
@@ -156,16 +156,17 @@ export default class ChatterbotPlugin extends Plugin {
 	private createLlama(): Llama {
 		const apiKey = this.getApiKeyForModel();
 		const statusCallback = (s: any) => status.set(s);
+		const toolsConfig = this.settings.tools;
 
 		switch (this.settings.modelType) {
 			case 'mirror':
-				return new MirrorLlama(apiKey, this.rag, statusCallback);
+				return new MirrorLlama(apiKey, statusCallback);
 			case 'ollama':
-				return new OllamaLlama(apiKey, this.rag, statusCallback, this.settings.ollama.baseUrl, this.settings.ollama.model);
+				return new OllamaLlama(apiKey, this.rag, statusCallback, this.settings.ollama.baseUrl, this.settings.ollama.model, toolsConfig);
 			case 'openai':
 			case 'anthropic':
 			default:
-				return new ManualLlama(apiKey, this.rag, statusCallback);
+				return new OpenAILlama(apiKey, this.rag, statusCallback, toolsConfig);
 		}
 	}
 
