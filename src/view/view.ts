@@ -79,25 +79,17 @@ export class ChatterbotView extends ItemView {
 	// }
 	llama = async () => {
 		try {
-			// Create abort controller for this request and store on llama instance
 			const abortController = new AbortController();
 			const llama = (this as any).plugin.llama;
 			(llama as any).abortController = abortController;
-			llama.abortSignal = abortController.signal;
 			
-			// console.log("calling backend");
-			// const result = await this.plugin.askLlama([{ role: "user", content: "Hey!" }]);
 			const chatHistory = get(messages);
-			// console.log(chatHistory);
-			
-			// Add empty assistant message that we'll stream into
-			messages.update(m => [...m, {role: "assistant", content: ""}]);
 			
 			// Set up streaming callback
 			llama.onStreamToken = (token: string) => {
-				// Update the last (assistant) message with the accumulated response
 				messages.update(m => {
 					const updated = [...m];
+					// Update the last assistant message if it exists
 					if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
 						updated[updated.length - 1].content = token;
 					}
@@ -105,47 +97,41 @@ export class ChatterbotView extends ItemView {
 				});
 			};
 			
-			const result = await (this as any).plugin.askLlama(chatHistory);
-			const reply = result.reply;
+			// Call LLM - now returns array of ChatMessage objects
+			const resultMessages = await (this as any).plugin.askLlama(chatHistory);
 			
-			// Clean up callback and abort signal
 			llama.onStreamToken = undefined;
-			llama.abortSignal = undefined;
 			(llama as any).abortController = null;
 			
-			// Update with final response (in case streaming wasn't complete)
-			messages.update(m => {
-				const updated = [...m];
-				if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
-					updated[updated.length - 1].content = reply;
-				}
-				return updated;
-			});
+			// Add each result message to UI and chat store
+			for (const msg of resultMessages) {
+				// Add to messages store for UI
+				messages.update(m => [...m, msg]);
+				
+				// Save to chat store with metadata
+				await (this as any).plugin.chatStore.addMessageToCurrentChat(
+					msg.role,
+					msg.content,
+					{
+						toolName: (msg as any).toolName,
+						displayMessage: (msg as any).displayMessage,
+						fullData: (msg as any).fullData,
+						displayArgs: (msg as any).displayArgs,
+						isExpanded: (msg as any).isExpanded
+					}
+				);
+			}
 			
-			// Save assistant response to chat store
-			await (this as any).plugin.chatStore.addMessageToCurrentChat("assistant", reply);
-			// console.log("LLM result:", result);
 		} catch (error) {
 			const isAbort = error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"));
 			if (isAbort) {
-				console.log("Model execution halted by user");
-				// Keep the partial text that was already streamed and save it
-				const currentMessages = get(messages);
-				if (currentMessages.length > 0) {
-					const lastMessage = currentMessages[currentMessages.length - 1];
-					if (lastMessage.role === "assistant" && lastMessage.content) {
-						await (this as any).plugin.chatStore.addMessageToCurrentChat("assistant", lastMessage.content);
-					}
-				}
+				console.log("Model execution halted");
 				status.set({ phase: "idle" });
 			} else {
-				console.error("Error during llama call:", error);
-				// Remove the empty message only for non-abort errors
-				messages.update(m => m.slice(0, -1));
+				console.error("Error:", error);
 			}
 		} finally {
 			const llama = (this as any).plugin.llama;
-			llama.abortSignal = undefined;
 			(llama as any).abortController = null;
 		}
 	}
@@ -174,15 +160,22 @@ export class ChatterbotView extends ItemView {
 			{role: "user", content: "Document to summarize: " + content},
 		];
 		// console.log(chatHistory);
-		const result = await this.plugin.askLlama(chatHistory);
-		const reply = typeof result.reply === 'string' ? result.reply : JSON.stringify(result.reply);
+		const resultMessages = await this.plugin.askLlama(chatHistory);
 
 		// TODO: error handling here
-		messages.update(m => [...m, {role: "assistant", content: reply}]);
-		
-		// Save to chat store
-		await this.plugin.chatStore.addMessageToCurrentChat("assistant", reply);
-		// console.log("LLM result:", result);
+		for (const msg of resultMessages) {
+			messages.update(m => [...m, msg]);
+			await this.plugin.chatStore.addMessageToCurrentChat(
+				msg.role,
+				msg.content,
+				{
+					toolName: (msg as any).toolName,
+					displayMessage: (msg as any).displayMessage,
+					fullData: (msg as any).fullData,
+					displayArgs: (msg as any).displayArgs,
+				}
+			);
+		}
 	}
 
 

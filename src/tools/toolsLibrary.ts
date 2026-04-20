@@ -21,9 +21,20 @@ export interface ToolsConfig {
 	// Future tools can be added here
 }
 
+/**
+ * Tool display metadata - how to show results to the user
+ */
+export interface ToolDisplayMetadata {
+	displayTemplate: string;   // e.g., "Retrieved {count} document(s) for '{query}'" - uses {argName} placeholders
+	collapseLabel?: string;    // Optional custom label
+	expandLabel?: string;
+	extractFullData?: () => any;  // Extract what to store as fullData
+}
+
 export interface ToolDefinition {
 	tool: any;
 	usageInstruction: string;
+	displayMetadata: ToolDisplayMetadata;  // NEW: how to display results to user
 }
 
 export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
@@ -36,6 +47,9 @@ export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
  * Creates tools based on configuration
  */
 export class ToolsFactory {
+	// Static storage for last documents retrieved
+	private static lastRetrievedDocs: any[] = [];
+
 	/**
 	 * Create the retrieve tool for RAG-based document retrieval
 	 */
@@ -49,6 +63,8 @@ export class ToolsFactory {
 				console.log("Retrieving: " + query);
 				const retriever = rag.getRetriever();
 				const documents = await retriever.invoke(query);
+				// Store documents for later retrieval
+				ToolsFactory.lastRetrievedDocs = documents;
 				return documents.map((d: any) => d.pageContent).join("\n---\n");
 			},
 			{
@@ -62,7 +78,13 @@ export class ToolsFactory {
 
 		return {
 			tool: retrieveTool,
-			usageInstruction: "Use the retrieve tool when you need context from the vault."
+			usageInstruction: "Use the retrieve tool when you need context from the vault.",
+			displayMetadata: {
+				displayTemplate: "Retrieved {count} document(s) for '{query}'",
+				expandLabel: "Show documents",
+				collapseLabel: "Hide documents",
+				extractFullData: () => ToolsFactory.lastRetrievedDocs
+			}
 		};
 	}
 
@@ -87,8 +109,24 @@ export class ToolsFactory {
 
 		return {
 			tool: noticeTool,
-			usageInstruction: "Use the notice tool to display messages in the UI when appropriate."
+			usageInstruction: "Use the notice tool to display messages in the UI when appropriate.",
+			displayMetadata: {
+				displayTemplate: "Displayed notice: {message}",
+				extractFullData: () => null  // Notices don't need expanded data
+			}
 		};
+	}
+
+	/**
+	 * Format display message using template and args
+	 * e.g., formatDisplayMessage("Retrieved {count} for '{query}'", { count: 3, query: "foo" })
+	 */
+	static formatDisplayMessage(template: string, args: Record<string, any>): string {
+		return template.replace(/{(\w+)}/g, (match, key) => {
+			const val = args[key];
+			if (val === undefined) return match;
+			return typeof val === 'string' ? val : JSON.stringify(val);
+		});
 	}
 
 	/**
@@ -146,5 +184,12 @@ export class ToolsFactory {
 			.join(" ");
 
 		return `You have access to the following tools:\n${descriptions}\n${instructions}`;
+	}
+
+	/**
+	 * Get tool definition by name
+	 */
+	static getToolDefinitionByName(name: string, config: ToolsConfig, rag: any): ToolDefinition | undefined {
+		return this.createToolDefinitions(config, rag).find(td => td.tool.name === name);
 	}
 }

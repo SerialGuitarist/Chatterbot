@@ -7,6 +7,7 @@ import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages
 import { tool } from "@langchain/core/tools";
 import * as z from "zod";
 import { ToolsFactory, type ToolsConfig } from "./tools/toolsLibrary";
+import type { ChatMessage } from "./chat";
 
 
 function toLC(msg: any) {
@@ -57,7 +58,7 @@ export class Llama {
 		this.onStatus?.(s);
 	}
 
-	async ask(messages: any) {
+	async ask(messages: any): Promise<ChatMessage[]> {
 		try {
 			const augmentedMessages = [
 				this.systemMessage,
@@ -68,10 +69,13 @@ export class Llama {
 			const result = await this.model!.invoke(augmentedMessages);
 			this.status({ phase: "idle"});
 
-			return {
-				reply: result.content,
-				context: { role: "system", content: "" }
-			};
+			// Handle content that might be string or array
+			let contentStr = typeof result.content === 'string' ? result.content : String(result.content);
+
+			return [{
+				role: "assistant",
+				content: contentStr
+			}];
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
 			throw error;
@@ -155,34 +159,33 @@ export abstract class ManualLlama extends Llama {
 	protected abstract invokeTooledModel(messages: any[]): Promise<any>;
 
 	/**
-	 * Core agent loop - generic for all providers that support manual tool use
+	 * Core agent loop - returns array of ChatMessage objects including tool results
 	 */
-	override async ask(originalMessages: any) {
+	override async ask(originalMessages: any): Promise<ChatMessage[]> {
 		try {
 			this.status({ phase: "thinking", detail: "Agent reasoning" });
+			const resultMessages: ChatMessage[] = [];
 			let contextStr = "";
 
-			// Agent loop with max 5 iterations to prevent infinite loops
+			// Agent loop with max 5 iterations
 			for (let i = 0; i < 5; i++) {
 				let messages = [
 					this.systemMessage,
 					...originalMessages,
-					{role: "system", content: contextStr ? "Context: " + contextStr : ""}
+					{role: "system", content: contextStr ? "Context from tool results:\n" + contextStr : ""}
 				].map(toLC);
 
 				const response = await this.invokeTooledModel(messages);
 
-				// Debug: log the response structure
 				console.log("Agent response:", {
 					content: response.content,
 					tool_calls: response.tool_calls,
-					additional_kwargs: response.additional_kwargs
 				});
 
-				// Check for tool_calls in both response and additional_kwargs
+				// Check for tool_calls
 				let toolCalls = response.tool_calls || response.additional_kwargs?.tool_calls;
 				
-				// If no structured tool_calls, try parsing from content string (manual format)
+				// Parse text-based tool calls from content
 				let contentToolCalls: any[] = [];
 				if (!toolCalls && response.content && typeof response.content === 'string') {
 					const toolCallRegex = /<tool_call>(\w+)\|(\{.*?\})<\/tool_call>/g;
@@ -191,10 +194,7 @@ export abstract class ManualLlama extends Llama {
 						try {
 							const toolName = match[1];
 							const args = JSON.parse(match[2]);
-							contentToolCalls.push({
-								name: toolName,
-								args: args
-							});
+							contentToolCalls.push({ name: toolName, args });
 						} catch (e) {
 							console.error("Failed to parse tool call:", match[0], e);
 						}
@@ -204,45 +204,102 @@ export abstract class ManualLlama extends Llama {
 				toolCalls = toolCalls || (contentToolCalls.length > 0 ? contentToolCalls : null);
 				
 				if (toolCalls && toolCalls.length > 0) {
-					// Remove tool call markers from content if they were parsed from the string
+					// STEP 1: Clean content by removing tool_call markers
 					let cleanContent = response.content;
 					if (contentToolCalls.length > 0) {
 						cleanContent = response.content.replace(/<tool_call>.*?<\/tool_call>/g, '').trim();
 						console.log("Cleaned content:", cleanContent);
 					}
 					
+					// STEP 2: Add clean content as assistant message if non-empty
+					if (cleanContent.length > 0) {
+						resultMessages.push({
+							role: "assistant",
+							content: cleanContent
+						});
+					}
+					
+					// STEP 3: Process each tool invocation and create tool_result messages
 					for (const toolCall of toolCalls) {
 						const tool = this.tools.find((t: any) => t.name === toolCall.name);
 						if (tool) {
-							console.log(`Invoking tool: ${toolCall.name} with args:`, toolCall.args);
+							console.log(`Invoking tool: ${toolCall.name}`, toolCall.args);
 							const result = await tool.invoke(toolCall.args);
-							contextStr += `Output of \`${toolCall.name}\` tool: ${result}\n---\n`;
+							
+							// For LLM context (internal - raw result)
+							contextStr += `Output of \`${toolCall.name}\` tool:\n${result}\n---\n`;
+							
+							// Create tool_result message for user display
+							const toolResultMsg: ChatMessage = {
+								role: "tool_result",
+								toolName: toolCall.name,
+								content: result,  // Raw content LLM sees
+								displayArgs: toolCall.args,
+								isExpanded: false
+							};
+							
+							// Get display template and metadata from tool definition
+							const toolDef = ToolsFactory.getToolDefinitionByName(
+								toolCall.name, 
+								this.toolsConfig, 
+								this.rag
+							);
+							
+							if (toolDef) {
+								// Format display message using template
+								const displayMsg = ToolsFactory.formatDisplayMessage(
+									toolDef.displayMetadata.displayTemplate,
+									{
+										...toolCall.args,
+										count: toolDef.displayMetadata.extractFullData?.()?.length || 0
+									}
+								);
+								toolResultMsg.displayMessage = displayMsg;
+								toolResultMsg.fullData = toolDef.displayMetadata.extractFullData?.();
+								console.log("Tool result display:", displayMsg);
+							}
+							
+							resultMessages.push(toolResultMsg);
 						}
 					}
-					this.status({ phase: "thinking", detail: "Agent reasoning with retrieved context" });
+					
+					this.status({ phase: "thinking", detail: "Agent reasoning with context" });
 					continue;
 				}
 
+				// No tool calls - agent is done
+				if (response.content && response.content.trim().length > 0) {
+					resultMessages.push({
+						role: "assistant",
+						content: response.content.trim()
+					});
+				}
+				
 				this.status({ phase: "idle" });
-				return {
-					reply: response.content,
-					context: { role: "system", content: contextStr ? "Context: " + contextStr : "" }
-				};
+				return resultMessages;
 			}
 
-			// Fallback: if we exhausted iterations, do one final invocation without tools
-			let messages = [
+			// Max iterations reached - do final response
+			const finalMessages = [
 				this.systemMessage,
 				...originalMessages,
-				{role: "system", content: contextStr ? "Context: " + contextStr : ""}
+				{role: "system", content: contextStr ? "Context from tool results:\n" + contextStr : ""}
 			].map(toLC);
 
-			const response = await this.model!.invoke(messages)
+			const response = await this.model!.invoke(finalMessages);
+			
+			// Handle content that might be string or array
+			const contentStr = typeof response.content === 'string' ? response.content : String(response.content);
+			
+			if (contentStr && contentStr.trim().length > 0) {
+				resultMessages.push({
+					role: "assistant",
+					content: contentStr.trim()
+				});
+			}
+			
 			this.status({ phase: "idle" });
-			return {
-				reply: response.content,
-				context: { role: "system", content: contextStr ? "Context: " + contextStr : "" }
-			};
+			return resultMessages;
 
 		} catch (err) {
 			this.status({ phase: "error", message: String(err) });
@@ -309,7 +366,7 @@ export class MirrorLlama extends Llama {
 		this.status({ phase: "idle"});
 	}
 
-	override async ask(messages: any) {
+	override async ask(messages: any): Promise<ChatMessage[]> {
 		try {
 			this.status({ phase: "thinking", detail: "Mirroring your message" });
 			
@@ -323,10 +380,10 @@ export class MirrorLlama extends Llama {
 			await new Promise(resolve => setTimeout(resolve, 100));
 
 			this.status({ phase: "idle" });
-			return {
-				reply: lastMessage.content,
-				context: { role: "system", content: "" }
-			};
+			return [{
+				role: "assistant",
+				content: lastMessage.content
+			}];
 		} catch (error) {
 			this.status({ phase: "error", message: String(error)});
 			throw error;

@@ -21,10 +21,28 @@ export class Chat {
 	}
 
 	/**
-	 * Add a message to the chat
+	 * Add a message to the chat with optional metadata
 	 */
-	addMessage(role: string, content: string): void {
-		this.messages.push({ role, content });
+	addMessage(
+		role: string, 
+		content: string,
+		metadata?: {
+			toolName?: string;
+			displayMessage?: string;
+			fullData?: any;
+			displayArgs?: Record<string, any>;
+			isExpanded?: boolean;
+		}
+	): void {
+		const message: any = { role, content };
+		if (metadata) {
+			if (metadata.toolName) message.toolName = metadata.toolName;
+			if (metadata.displayMessage) message.displayMessage = metadata.displayMessage;
+			if (metadata.fullData) message.fullData = metadata.fullData;
+			if (metadata.displayArgs) message.displayArgs = metadata.displayArgs;
+			if (metadata.isExpanded !== undefined) message.isExpanded = metadata.isExpanded;
+		}
+		this.messages.push(message);
 		this.updatedAt = Date.now();
 	}
 
@@ -233,12 +251,22 @@ export class ChatStore {
 	}
 
 	/**
-	 * Add a message to the current chat
+	 * Add a message to the current chat with optional metadata
 	 */
-	async addMessageToCurrentChat(role: string, content: string): Promise<void> {
+	async addMessageToCurrentChat(
+		role: string, 
+		content: string,
+		metadata?: {
+			toolName?: string;
+			displayMessage?: string;
+			fullData?: any;
+			displayArgs?: Record<string, any>;
+			isExpanded?: boolean;
+		}
+	): Promise<void> {
 		const chat = this.getCurrentChat();
 		if (chat) {
-			chat.addMessage(role, content);
+			chat.addMessage(role, content, metadata);
 			await this.save();
 		}
 	}

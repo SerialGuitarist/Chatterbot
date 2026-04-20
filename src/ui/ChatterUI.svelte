@@ -15,6 +15,9 @@
 	let editingTitle = "";
 	let newChatText = ""; // Text in the new chat input
 	let messagesContainer: HTMLElement;
+	
+	// Track which tool results are expanded
+	let expandedToolMessages = new Set<number>();
 
 	// Initialize chats on mount
 	async function init() {
@@ -35,6 +38,7 @@
 		currentChat = chat;
 		messages.set(chat.messages);
 		input = chat.draftText || "";
+		expandedToolMessages = new Set();
 		// Scroll to bottom after component updates
 		await new Promise(resolve => setTimeout(resolve, 0));
 		scrollToBottom();
@@ -167,6 +171,33 @@
 		isEditingTitle = false;
 	}
 
+	function toggleToolMessage(index: number) {
+		if (expandedToolMessages.has(index)) {
+			expandedToolMessages.delete(index);
+		} else {
+			expandedToolMessages.add(index);
+		}
+		expandedToolMessages = expandedToolMessages; // Trigger reactivity
+	}
+
+	function expandAllToolMessages() {
+		$messages.forEach((msg, idx) => {
+			if (msg.role === "tool_result") {
+				expandedToolMessages.add(idx);
+			}
+		});
+		expandedToolMessages = expandedToolMessages;
+	}
+
+	function collapseAllToolMessages() {
+		$messages.forEach((msg, idx) => {
+			if (msg.role === "tool_result") {
+				expandedToolMessages.delete(idx);
+			}
+		});
+		expandedToolMessages = expandedToolMessages;
+	}
+
 	// Initialize on component mount
 	init();
 </script>
@@ -283,10 +314,47 @@
 			</div>
 
 			<div class="messages" bind:this={messagesContainer}>
-				{#each $messages as msg}
-					<div class="bubble {msg.role}">
-						{@html marked(msg.content)}
-					</div>
+				{#each $messages as msg, idx}
+					{#if msg.role === "tool_result"}
+						<!-- Tool Result Message (expandable) -->
+						<div class="bubble tool_result">
+							<div 
+								class="tool-header"
+								on:click={() => toggleToolMessage(idx)}
+								role="button"
+								tabindex="0"
+								on:keydown={(e) => {
+									if (e.key === 'Enter' || e.key === ' ') {
+										toggleToolMessage(idx);
+									}
+								}}
+							>
+								<span class="tool-icon">{expandedToolMessages.has(idx) ? "▼" : "▶"}</span>
+								<span class="tool-name">{msg.toolName}:</span>
+								<span class="tool-display">{msg.displayMessage || msg.content}</span>
+							</div>
+							
+							{#if expandedToolMessages.has(idx) && msg.fullData}
+								<div class="tool-expanded">
+									{#if Array.isArray(msg.fullData)}
+										{#each msg.fullData as doc, docIdx}
+											<div class="tool-document">
+												<div class="doc-title">{doc.metadata?.source || `Document ${docIdx + 1}`}</div>
+												<div class="doc-content">{doc.pageContent}</div>
+											</div>
+										{/each}
+									{:else}
+										<pre>{JSON.stringify(msg.fullData, null, 2)}</pre>
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{:else}
+						<!-- Regular User/Assistant Message -->
+						<div class="bubble {msg.role}">
+							{@html marked(msg.content)}
+						</div>
+					{/if}
 				{/each}
 			</div>
 
@@ -327,6 +395,22 @@
 				</button>
 				<button on:click={view.test}>Test</button>
 				<button on:click={view.clear}>Clear</button>
+			</div>
+
+			<!-- Tool Controls Row (4th row with 2 columns) -->
+			<div class="buttons tool-controls">
+				<button 
+					on:click={expandAllToolMessages}
+					title="Expand all tool result messages"
+				>
+					Expand All
+				</button>
+				<button 
+					on:click={collapseAllToolMessages}
+					title="Collapse all tool result messages"
+				>
+					Collapse All
+				</button>
 			</div>
 		</div>
 	{/if}
@@ -642,5 +726,106 @@
 
 	.buttons button:hover {
 		background: var(--background-modifier-hover);
+	}
+
+	/* Tool Result Message Styles */
+	.bubble.tool_result {
+		align-self: flex-start;
+		background: var(--background-tertiary);
+		color: var(--text-normal);
+		padding: 0;
+		border: 1px solid var(--background-modifier-border);
+		border-radius: 6px;
+		overflow: hidden;
+		max-width: 85%;
+	}
+
+	.tool-header {
+		padding: 10px 14px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		user-select: none;
+		transition: background 0.15s;
+	}
+
+	.tool-header:hover {
+		background: var(--background-modifier-hover);
+	}
+
+	.tool-icon {
+		display: inline-block;
+		font-size: 12px;
+		font-weight: bold;
+		min-width: 16px;
+		text-align: center;
+	}
+
+	.tool-name {
+		font-weight: 600;
+		color: var(--interactive-accent);
+		min-width: 70px;
+	}
+
+	.tool-display {
+		color: var(--text-normal);
+		flex: 1;
+		word-break: break-word;
+	}
+
+	.tool-expanded {
+		background: var(--background-primary);
+		padding: 12px 14px;
+		border-top: 1px solid var(--background-modifier-border);
+		max-height: 400px;
+		overflow-y: auto;
+		font-size: 12px;
+	}
+
+	.tool-document {
+		margin-bottom: 12px;
+		padding: 10px;
+		background: var(--background-secondary);
+		border-radius: 4px;
+		border-left: 3px solid var(--interactive-accent);
+	}
+
+	.doc-title {
+		font-weight: 600;
+		font-size: 11px;
+		color: var(--interactive-accent);
+		margin-bottom: 4px;
+		text-transform: uppercase;
+	}
+
+	.doc-content {
+		color: var(--text-normal);
+		white-space: pre-wrap;
+		word-wrap: break-word;
+		line-height: 1.4;
+	}
+
+	.tool-expanded pre {
+		background: var(--background-primary);
+		padding: 8px;
+		border-radius: 4px;
+		overflow-x: auto;
+		font-size: 11px;
+	}
+
+	/* Tool Controls Row (4th row - 2 column grid) */
+	.buttons.tool-controls {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 6px;
+		padding: 6px 16px;
+		background: var(--background-secondary);
+		border-top: 1px solid var(--divider-color);
+		flex-shrink: 0;
+	}
+
+	.buttons.tool-controls button {
+		width: 100%;
 	}
 </style>
