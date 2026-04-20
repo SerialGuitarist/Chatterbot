@@ -53,9 +53,21 @@ export class RAGStore {
 	constructor(plugin: Plugin) {
 	// constructor(plugin: Plugin, hashFunction = xxhash) {
 		this.plugin = plugin;
+		
+		// Use the appropriate API key based on model type
+		const settings = (plugin as any).settings;
+		let apiKey = '';
+		
+		if (settings.modelType === 'openai') {
+			apiKey = settings.openai.apiKey;
+		} else if (settings.modelType === 'anthropic') {
+			apiKey = settings.anthropic.apiKey;
+		}
+		// For ollama and mirror, apiKey remains empty and embeddings will be handled below
+		
 		this.embeddings = new OpenAIEmbeddings({
 			model: "text-embedding-3-large",
-			apiKey: plugin.settings.apiKey
+			apiKey: apiKey || undefined // Only set if not empty
 		});
 		// this.hashFunction = hashFunction;
 	}

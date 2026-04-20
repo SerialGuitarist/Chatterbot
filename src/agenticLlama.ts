@@ -1,21 +1,20 @@
 
 
-// ignore this class. trying to compile gives this error
-// > chatterbot@0.0.1 dev
-// > node esbuild.config.mjs
-// 
-// ✘ [ERROR] Could not resolve "node:async_hooks"
-// 
-    // node_modules/@langchain/langgraph/dist/setup/async_local_storage.js:2:34:
-      // 2 │ import { AsyncLocalStorage } from "node:async_hooks";
-        // ╵                                   ~~~~~~~~~~~~~~~~~~
-// 
-  // The package "node:async_hooks" wasn't found on the file system but is built into node. Are you
-  // trying to bundle for node? You can use "platform: 'node'" to do that, which will remove this
-  // error.
+/* 
+ignore this class. trying to compile gives this error:
+> chatterbot@0.0.1 dev
+> node esbuild.config.mjs
 
-// apparently this means that this is expecting to be running on node
-// but obsidian plugins are not running in node, but in electron?
+✘ [ERROR] Could not resolve "node:async_hooks"
+  node_modules/@langchain/langgraph/dist/setup/async_local_storage.js:2:34:
+    2 │ import { AsyncLocalStorage } from "node:async_hooks";
+      ╵                                   ~~~~~~~~~~~~~~~~~~
+
+The package "node:async_hooks" wasn't found on the file system but is built into node.
+This is because it's expecting to run on node but obsidian plugins run in electron.
+
+Disabling this class for now until we can fix the dependencies.
+
 export class AgenticLlama extends Llama {
 	agent: any;
 
@@ -87,3 +86,4 @@ export class AgenticLlama extends Llama {
 		}
 	}
 }
+*/

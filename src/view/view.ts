@@ -5,6 +5,7 @@ import { mount, unmount } from 'svelte';
 
 import { messages } from "../chat";
 import { get } from "svelte/store";
+import type ChatterbotPlugin from '../main';
 
 export const VIEW_TYPE = 'chatterbot-view';
 
@@ -21,8 +22,12 @@ export class ChatterbotView extends ItemView {
 		return VIEW_TYPE;
 	}
 
+	getIcon() {
+		return 'message-square';
+	}
+
 	getDisplayText() {
-		return 'Chatterbot Display Text';
+		return 'Chatterbot';
 	}
 
 	async onOpen() {
@@ -51,6 +56,12 @@ export class ChatterbotView extends ItemView {
 
 	async clear() {
 		messages.update(m => []);
+		// Clear the messages in the current chat
+		const currentChat = this.plugin.chatStore.getCurrentChat();
+		if (currentChat) {
+			currentChat.messages = [];
+			await this.plugin.chatStore.save();
+		}
 	}
 
 	update = async () => {
@@ -65,19 +76,51 @@ export class ChatterbotView extends ItemView {
 		// this.llama.test();
 	// }
 	llama = async () => {
-		// console.log("calling backend");
-		// const result = await this.plugin.askLlama([{ role: "user", content: "Hey!" }]);
-		const chatHistory = get(messages);
-		// console.log(chatHistory);
-		const result = await this.plugin.askLlama(chatHistory);
-		const reply = result.reply;
-		
-		// TODO: handle context here
-
-
-		// TODO: error handling here
-		messages.update(m => [...m, {role: "assistant", content: reply}]);
-		// console.log("LLM result:", result);
+		try {
+			// console.log("calling backend");
+			// const result = await this.plugin.askLlama([{ role: "user", content: "Hey!" }]);
+			const chatHistory = get(messages);
+			// console.log(chatHistory);
+			
+			// Add empty assistant message that we'll stream into
+			messages.update(m => [...m, {role: "assistant", content: ""}]);
+			
+			// Set up streaming callback
+			const llama = (this as any).plugin.llama;
+			llama.onStreamToken = (token: string) => {
+				// Update the last (assistant) message with the accumulated response
+				messages.update(m => {
+					const updated = [...m];
+					if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
+						updated[updated.length - 1].content = token;
+					}
+					return updated;
+				});
+			};
+			
+			const result = await (this as any).plugin.askLlama(chatHistory);
+			const reply = result.reply;
+			
+			// Clean up callback
+			llama.onStreamToken = undefined;
+			
+			// Update with final response (in case streaming wasn't complete)
+			messages.update(m => {
+				const updated = [...m];
+				if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
+					updated[updated.length - 1].content = reply;
+				}
+				return updated;
+			});
+			
+			// Save assistant response to chat store
+			await (this as any).plugin.chatStore.addMessageToCurrentChat("assistant", reply);
+			// console.log("LLM result:", result);
+		} catch (error) {
+			console.error("Error during llama call:", error);
+			// Remove the empty message if something went wrong
+			messages.update(m => m.slice(0, -1));
+		}
 	}
 
 	summarize = async () => {
@@ -100,7 +143,10 @@ export class ChatterbotView extends ItemView {
 		const reply = result.reply;
 
 		// TODO: error handling here
-		messages.update(m => [...m, {role: "assistant", content: reply.content}]);
+		messages.update(m => [...m, {role: "assistant", content: reply}]);
+		
+		// Save to chat store
+		await this.plugin.chatStore.addMessageToCurrentChat("assistant", reply);
 		// console.log("LLM result:", result);
 	}
 
