@@ -1,7 +1,7 @@
 // shared storage for ChatterUI.svelte and view.ts
 
 import { writable } from "svelte/store";
-import type { LlamaStatus } from "./llama";
+import type { LlamaStatus } from "../llama/llama";
 
 export interface ChatMessage {
 	role: "user" | "assistant" | "tool_result";

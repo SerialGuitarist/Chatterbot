@@ -1,72 +1,81 @@
 /**
  * Tools Library
  * Provides a registry of available tools for LLM agents
- * Allows configuration of which tools are enabled
+ * 
+ * To add a new tool:
+ * 1. Create a createXxxTool() method that returns ToolDefinition
+ * 2. Add one entry to TOOL_REGISTRY below (this is the single source of truth)
+ * Everything else (ToolsConfig, settings, defaults, toggles) is auto-generated
  */
-
-// checklist for adding tools:
-// 1. createNewTool()
-// 2. newTool?: boolean in ToolsConfig
-// 3. register tools in createToolDefinitions()
-// 4. add default setting in settings.ts > DEFAULT_SETTINGS (ie. newTool: true)
-// 5. register tool in settings.ts > ToolsSettings
-// 6. ensure the tool has necessary stuff passed in llama.ts > ToolsFactory.createTools()
-// 7. add ui toggle in main.ts > settings > addToolsSection
 
 import { tool } from "@langchain/core/tools";
 import { Notice } from "obsidian";
 import * as z from "zod";
 
-export interface LLMTool {
-	name: string;
-	description: string;
-	schema: z.ZodSchema;
-	fn: (args: any) => Promise<string>;
-}
-
-export interface ToolsConfig {
-	retrieve: boolean;
-	notice?: boolean;
-	listMarkdownFiles?: boolean;
-	// Future tools can be added here
-}
-
-/**
- * Tool display metadata - how to show results to the user
- */
-export interface ToolDisplayMetadata {
-	displayTemplate: string;   // e.g., "Retrieved {count} document(s) for '{query}'" - uses {argName} placeholders
-	collapseLabel?: string;    // Optional custom label
-	expandLabel?: string;
-	extractFullData?: () => any;  // Extract what to store as fullData
-}
-
 export interface ToolDefinition {
 	tool: any;
 	usageInstruction: string;
-	displayMetadata: ToolDisplayMetadata;  // how to display results to user
+	displayTemplate: string;   // e.g., "Retrieved {count} document(s) for '{query}'" - uses {argName} placeholders
+	// Metadata (settingName, settingDescription, defaultEnabled) come from TOOL_REGISTRY, not here
 }
 
-export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
-	retrieve: true,
-	notice: true,
-};
+/**
+ * Tool registry - the single source of truth for all available tools
+ * Each entry maps a tool name to its metadata and factory function
+ */
+export interface ToolRegistryEntry {
+	toolName: string;
+	settingName: string;
+	settingDescription: string;
+	defaultEnabled: boolean;
+	factory: (rag: any, onStatus?: (s: any) => void, vault?: any) => ToolDefinition;
+}
+
+// Dynamically generated from tool registry - use this in settings and config
+export interface ToolsConfig {
+	retrieve: boolean;
+	notice: boolean;
+	listMarkdownFiles: boolean;
+	// Future tools will be auto-added here via ToolsConfigType generation
+}
 
 /**
  * Tool factory function
  * Creates tools based on configuration
  */
 export class ToolsFactory {
-	// Static storage for last documents retrieved
-	private static lastRetrievedDocs: any[] = [];
+	/**
+	 * TOOL REGISTRY - Single source of truth for all available tools
+	 * Add new tools here and they'll automatically appear in settings, defaults, and toggles
+	 */
+	private static TOOL_REGISTRY: ToolRegistryEntry[] = [
+		{
+			toolName: "retrieve",
+			settingName: "Retrieval",
+			settingDescription: "RAG-based document retrieval tool (requires embeddings to be set up)",
+			defaultEnabled: false,
+			factory: (rag: any, onStatus?: (s: any) => void) => ToolsFactory.createRetrieveTool(rag, onStatus)
+		},
+		{
+			toolName: "notice",
+			settingName: "Notice",
+			settingDescription: "Notice tool to display messages in the UI",
+			defaultEnabled: true,
+			factory: () => ToolsFactory.createNoticeTool()
+		},
+		{
+			toolName: "listMarkdownFiles",
+			settingName: "List Markdown Files",
+			settingDescription: "Tool to list all markdown files in the vault with their metadata",
+			defaultEnabled: true,
+			factory: (rag, onStatus, vault) => ToolsFactory.createListMarkdownFilesTool(vault)
+		}
+	];
 
 	/**
 	 * Create the retrieve tool for RAG-based document retrieval
 	 */
-	static createRetrieveTool(
-		rag: any,
-		onStatus?: (s: any) => void
-	): ToolDefinition {
+	static createRetrieveTool(rag: any, onStatus?: (s: any) => void): ToolDefinition {
 		const retrieveTool = tool(
 			async ({ query }: { query: string }) => {
 				onStatus?.({ phase: "thinking", detail: "Retrieving: " + query });
@@ -74,8 +83,8 @@ export class ToolsFactory {
 				const retriever = rag.getRetriever();
 				const documents = await retriever.invoke(query);
 				// Store documents for later retrieval
-				ToolsFactory.lastRetrievedDocs = documents;
-				return documents.map((d: any) => d.pageContent).join("\n---\n");
+				// ToolsFactory.lastRetrievedDocs = documents;
+				return documents.map((d: any) => d.pageContent).join("---");
 			},
 			{
 				name: "retrieve",
@@ -85,24 +94,12 @@ export class ToolsFactory {
 				}),
 			}
 		);
-
-		// Attach metadata to tool instance
-		(retrieveTool as any).displayMetadata = {
-			displayTemplate: "Retrieved {count} document(s) for '{query}'",
-			expandLabel: "Show documents",
-			collapseLabel: "Hide documents",
-			extractFullData: () => ToolsFactory.lastRetrievedDocs
-		};
-
+		
 		return {
 			tool: retrieveTool,
 			usageInstruction: "Use the retrieve tool when you need context from the vault.",
-			displayMetadata: {
-				displayTemplate: "Retrieved {count} document(s) for '{query}'",
-				expandLabel: "Show documents",
-				collapseLabel: "Hide documents",
-				extractFullData: () => ToolsFactory.lastRetrievedDocs
-			}
+			displayTemplate: "Retrieved {count} document(s) for '{query}'"
+			// settingName, settingDescription, defaultEnabled come from TOOL_REGISTRY
 		};
 	}
 
@@ -113,7 +110,6 @@ export class ToolsFactory {
 		const noticeTool = tool(
 			async ({ message }: { message: string }) => {
 				new Notice(message);
-				console.log("Notice:", message);
 				return `Notice displayed: ${message}`;
 			},
 			{
@@ -125,19 +121,11 @@ export class ToolsFactory {
 			}
 		);
 
-		// Attach metadata to tool instance
-		(noticeTool as any).displayMetadata = {
-			displayTemplate: "Displayed notice: {message}",
-			extractFullData: () => null  // Notices don't need expanded data
-		};
-
 		return {
 			tool: noticeTool,
 			usageInstruction: "Use the notice tool to display messages in the UI when appropriate.",
-			displayMetadata: {
-				displayTemplate: "Displayed notice: {message}",
-				extractFullData: () => null  // Notices don't need expanded data
-			}
+			displayTemplate: "Displayed notice: {message}"
+			// settingName, settingDescription, defaultEnabled come from TOOL_REGISTRY
 		};
 	}
 
@@ -145,48 +133,44 @@ export class ToolsFactory {
 	 * Create a tool for listing markdown files in the vault
 	 */
 	static createListMarkdownFilesTool(vault: any): ToolDefinition {
-		// Static storage for last file list retrieved (serializable format)
-		let lastFilesList: any[] = [];
-
 		const listMarkdownFilesTool = tool(
 			async ({ filterModified }: { filterModified?: boolean }) => {
 				const vaultFiles = vault.getMarkdownFiles();
 				
 				// Store serializable file data (not raw TFile objects)
-				lastFilesList = vaultFiles.map((file: any) => ({
+				const filesList = vaultFiles.map((file: any) => ({
 					path: file.path,
 					name: file.name,
 					size: file.stat?.size || 0,
 					modified: file.stat?.mtime || 0
 				}));
 
-				// Return a human-readable summary for the LLM
-				const fileNames = vaultFiles.map((f: any) => `- ${f.path}`).join('\n');
-				return `Found ${vaultFiles.length} markdown files in your vault:\n\n${fileNames}`;
+				// Format as markdown table with numbered index
+				const markdownTable = [
+					"| # | Name | Path | Size (bytes) | Modified |",
+					"|---|------|------|-------------|----------|",
+					...filesList.map((file: any, index: number) => {
+						const modifiedDate = new Date(file.modified).toLocaleDateString();
+						return `| ${index + 1} | ${file.name} | ${file.path} | ${file.size} | ${modifiedDate} |`;
+					})
+				].join("\n");
+
+				return markdownTable;
 			},
 			{
 				name: "listMarkdownFiles",
 				description: "Get a list of all markdown files in the Obsidian vault with their metadata",
 				schema: z.object({
-					filterModified: z.boolean().optional().describe("If true, only return recently modified files"),
+					// filterModified: z.boolean().optional().describe("If true, only return recently modified files"),
 				}),
 			}
 		);
 
-		const metadata = {
-			displayTemplate: "Found {count} markdown file(s) in vault",
-			expandLabel: "Show file list",
-			collapseLabel: "Hide file list",
-			extractFullData: () => lastFilesList
-		};
-
-		// Attach metadata to tool instance
-		(listMarkdownFilesTool as any).displayMetadata = metadata;
-
 		return {
 			tool: listMarkdownFilesTool,
-			usageInstruction: "Use the listMarkdownFiles tool to see all available markdown files in the vault and their metadata.",
-			displayMetadata: metadata
+			usageInstruction: "Use the listMarkdownFiles tool to see all available markdown files in the vault, their location, and their metadata.",
+			displayTemplate: "Listed all files in the vault"
+			// settingName, settingDescription, defaultEnabled come from TOOL_REGISTRY
 		};
 	}
 
@@ -226,16 +210,25 @@ export class ToolsFactory {
 	): ToolDefinition[] {
 		const toolDefinitions: ToolDefinition[] = [];
 
-		if (config.retrieve && rag?.hasValidEmbeddings) {
-			toolDefinitions.push(this.createRetrieveTool(rag, onStatus));
-		}
+		for (const entry of this.TOOL_REGISTRY) {
+			const configValue = (config as any)[entry.toolName];
+			
+			// Skip if tool is disabled in config
+			if (!configValue) {
+				continue;
+			}
+			
+			// Skip retrieve tool if RAG doesn't have valid embeddings
+			if (entry.toolName === "retrieve" && !rag?.hasValidEmbeddings) {
+				continue;
+			}
 
-		if (config.notice) {
-			toolDefinitions.push(this.createNoticeTool());
-		}
-
-		if (config.listMarkdownFiles && vault) {
-			toolDefinitions.push(this.createListMarkdownFilesTool(vault));
+			try {
+				const toolDefinition = entry.factory(rag, onStatus, vault);
+				toolDefinitions.push(toolDefinition);
+			} catch (err) {
+				console.error(`Error creating tool ${entry.toolName}:`, err);
+			}
 		}
 
 		return toolDefinitions;
@@ -271,5 +264,23 @@ export class ToolsFactory {
 	 */
 	static getToolDefinitionByName(name: string, config: ToolsConfig, rag: any, vault?: any): ToolDefinition | undefined {
 		return this.createToolDefinitions(config, rag, undefined, vault).find(td => td.tool.name === name);
+	}
+
+	/**
+	 * Get metadata for all available tools (regardless of enablement)
+	 * Used for generating settings UI and defaults
+	 */
+	static getAllToolMetadata(): Array<{
+		toolName: string;
+		settingName: string;
+		settingDescription: string;
+		defaultEnabled: boolean;
+	}> {
+		return this.TOOL_REGISTRY.map(entry => ({
+			toolName: entry.toolName,
+			settingName: entry.settingName,
+			settingDescription: entry.settingDescription,
+			defaultEnabled: entry.defaultEnabled
+		}));
 	}
 }

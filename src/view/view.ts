@@ -3,7 +3,8 @@ import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 import  ChatterUI from '../ui/ChatterUI.svelte';
 import { mount, unmount } from 'svelte';
 
-import { messages, status } from "../chat";
+import { messages, status } from "../chats/chat";
+import type { ChatMessage } from "../chats/chat";
 import { get } from "svelte/store";
 import type ChatterbotPlugin from '../main';
 
@@ -78,27 +79,24 @@ export class ChatterbotView extends ItemView {
 		// this.llama.test();
 	// }
 	llama = async () => {
+		let streamingMessageIndex = -1;
+		let isStreaming = false;
+
 		try {
 			const abortController = new AbortController();
 			const llama = (this as any).plugin.llama;
+			llama.abortSignal = abortController.signal;
 			(llama as any).abortController = abortController;
-			
+
 			const chatHistory = get(messages);
-			let streamingMessageIndex = -1;
-			let isStreaming = false;
-			
-			// Set up streaming callback - append tokens to streaming message
+
 			llama.onStreamToken = (token: string) => {
 				messages.update(m => {
-					// Create streaming message on first token
 					if (!isStreaming) {
 						isStreaming = true;
-						const newMsg = { role: "assistant" as const, content: token };
 						streamingMessageIndex = m.length;
-						return [...m, newMsg];
+						return [...m, { role: "assistant" as const, content: token }];
 					}
-					
-					// Append token to streaming message
 					const updated = [...m];
 					if (streamingMessageIndex >= 0 && streamingMessageIndex < updated.length) {
 						updated[streamingMessageIndex].content += token;
@@ -106,43 +104,74 @@ export class ChatterbotView extends ItemView {
 					return updated;
 				});
 			};
-			
-			// Call LLM - now returns array of ChatMessage objects
+
 			const resultMessages = await (this as any).plugin.askLlama(chatHistory);
-			
+
 			llama.onStreamToken = undefined;
 			(llama as any).abortController = null;
-			
-			// Remove the streaming placeholder message if it exists
+
 			if (streamingMessageIndex >= 0) {
-				messages.update(m => {
-					const updated = [...m];
-					updated.splice(streamingMessageIndex, 1);
-					return updated;
-				});
-			}
-			
-			// Add each result message to UI and chat store
-			for (const msg of resultMessages) {
-				messages.update(m => [...m, msg]);
-				
-				await (this as any).plugin.chatStore.addMessageToCurrentChat(
-					msg.role,
-					msg.content,
-					{
-						toolName: (msg as any).toolName,
-						displayMessage: (msg as any).displayMessage,
-						fullData: (msg as any).fullData,
-						displayArgs: (msg as any).displayArgs,
-						isExpanded: (msg as any).isExpanded
+				if (resultMessages.length > 0) {
+					// Replace streaming placeholder with final results
+					messages.update(m => {
+						const updated = [...m];
+						updated.splice(streamingMessageIndex, 1);
+						return updated;
+					});
+					for (const msg of resultMessages) {
+						messages.update(m => [...m, msg]);
+						await (this as any).plugin.chatStore.addMessageToCurrentChat(
+							msg.role,
+							msg.content,
+							{
+								toolName: (msg as any).toolName,
+								displayMessage: (msg as any).displayMessage,
+								fullData: (msg as any).fullData,
+								displayArgs: (msg as any).displayArgs,
+								isExpanded: (msg as any).isExpanded
+							}
+						);
 					}
-				);
+				} else {
+					// Halted mid-stream — keep visible, save partial content
+					let currentMessages: ChatMessage[] = [];
+					const unsubscribe = messages.subscribe(m => { currentMessages = m; });
+					unsubscribe();
+					if (streamingMessageIndex < currentMessages.length) {
+						const haltedMsg = currentMessages[streamingMessageIndex];
+						if (haltedMsg.content?.trim()) {
+							await (this as any).plugin.chatStore.addMessageToCurrentChat(
+								"assistant",
+								haltedMsg.content,
+								{}
+							);
+						}
+					}
+				}
 			}
-			
 		} catch (error) {
-			const isAbort = error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"));
+			const isAbort = error instanceof Error && (
+				error.name === "AbortError" ||
+				error.message.includes("aborted") ||
+				error.message.includes("Aborted")
+			);
 			if (isAbort) {
-				console.log("Model execution halted");
+				// Save partial streaming content before idling
+				if (streamingMessageIndex >= 0) {
+					let currentMessages: ChatMessage[] = [];
+					const unsubscribe = messages.subscribe(m => { currentMessages = m; });
+					unsubscribe();
+					if (streamingMessageIndex < currentMessages.length) {
+						const haltedMsg = currentMessages[streamingMessageIndex];
+						if (haltedMsg.content?.trim()) {
+							await (this as any).plugin.chatStore.addMessageToCurrentChat(
+								"assistant",
+								haltedMsg.content,
+								{}
+							);
+						}
+					}
+				}
 				status.set({ phase: "idle" });
 			} else {
 				console.error("Error:", error);

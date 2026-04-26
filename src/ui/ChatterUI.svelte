@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { marked } from "marked";
 	import { afterUpdate } from "svelte";
-	import { messages, status } from "../chat";
-	import type { Chat } from "../chatManager";
+	import { messages, status } from "../chats/chat";
+	import type { Chat } from "../chats/chatManager";
 
 	export let view: any;
 
@@ -92,15 +92,6 @@
 		e.preventDefault();
 		await view.plugin.chatStore.deleteChat(chatId);
 		updateChatsList();
-	}
-
-	async function startTypingNewChat() {
-		// Only create a new chat if there's actual text being typed
-		if (newChatText.trim()) {
-			const newChat = await view.plugin.chatStore.createChat();
-			// Don't select the chat yet - keep user in chat list view
-			// They'll switch to chat interface after sending the first message
-		}
 	}
 
 	async function sendNewChatMessage() {

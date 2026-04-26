@@ -30,7 +30,7 @@ export class Chat {
 			toolName?: string;
 			displayMessage?: string;
 			fullData?: any;
-			displayArgs?: Record<string, any>;
+			displayArgs?: Record<string, any>; // ???
 			isExpanded?: boolean;
 		}
 	): void {

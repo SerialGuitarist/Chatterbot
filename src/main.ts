@@ -4,13 +4,15 @@ import { Plugin, Notice, WorkspaceLeaf } from "obsidian";
 import { App, Editor, MarkdownView, Modal, PluginSettingTab, Setting } from 'obsidian';
 
 import { ChatterbotView, VIEW_TYPE } from './view/view';
-import { Llama, OpenAILlama, MirrorLlama, OllamaLlama } from './llama';
-import { RAGStore } from "./ragStore";
-import { status } from "./chat";
+import { OpenAILlama, MirrorLlama, OllamaLlama } from './llama/llama';
+import type { Llama } from './llama/llama';
+import { ToolsFactory } from "./tools/toolsLibrary";
+import { RAGStore } from "./tools/ragStore";
+import { status } from "./chats/chat";
 import type { ChatterbotPluginSettings, ModelType } from './settings';
 import { DEFAULT_SETTINGS } from './settings';
 import { isModelConfigValid } from './modelFactory';
-import { ChatStore } from './chatManager';
+import { ChatStore } from './chats/chatManager';
 
 export default class ChatterbotPlugin extends Plugin {
 	settings: ChatterbotPluginSettings;
@@ -125,7 +127,7 @@ export default class ChatterbotPlugin extends Plugin {
 		data.settings = this.settings;
 		await this.saveData(data);
 		
-		// Reinitialize the LLM if model type changed
+		// Reinitialize the LLM in case API keys or model type changed
 		if (this.llama) {
 			this.llama = this.createLlama();
 		}
@@ -156,18 +158,37 @@ export default class ChatterbotPlugin extends Plugin {
 	private createLlama(): Llama {
 		const apiKey = this.getApiKeyForModel();
 		const statusCallback = (s: any) => status.set(s);
+		const streamCallback = (token: string) => {
+			// Append token to current chat message for streaming display
+			const currentChat = this.chatStore.getCurrentChat();
+			if (currentChat && currentChat.messages.length > 0) {
+				const lastMessage = currentChat.messages[currentChat.messages.length - 1];
+				if (lastMessage.role === 'assistant') {
+					lastMessage.content += token;
+				}
+			}
+		};
 		const toolsConfig = this.settings.tools;
 
+		let llama: Llama;
+		
 		switch (this.settings.modelType) {
 			case 'mirror':
-				return new MirrorLlama(apiKey, statusCallback);
+				llama = new MirrorLlama(apiKey, statusCallback);
+				break;
 			case 'ollama':
-				return new OllamaLlama(apiKey, this.rag, statusCallback, this.settings.ollama.baseUrl, this.settings.ollama.model, toolsConfig);
+				llama = new OllamaLlama(apiKey, this.rag, statusCallback, this.settings.ollama.baseUrl, this.settings.ollama.model, toolsConfig);
+				break;
 			case 'openai':
 			case 'anthropic':
 			default:
-				return new OpenAILlama(apiKey, this.rag, statusCallback, toolsConfig);
+				llama = new OpenAILlama(apiKey, this.rag, statusCallback, toolsConfig);
 		}
+		
+		// Set the stream token callback
+		llama.onStreamToken = streamCallback;
+		
+		return llama;
 	}
 
 	async triggerEmbeddingsUpdate() {
@@ -185,7 +206,8 @@ export default class ChatterbotPlugin extends Plugin {
 	
 
 	async askLlama(messages: any) {
-		let mainResult = await this.llama.ask(messages)
+		// let mainResult = await this.llama.ask(messages)
+		let mainResult = await this.llama.askWithTools(messages)
 		// console.log("mainresult:", mainResult);
 		return mainResult;
 	}
@@ -351,34 +373,18 @@ class ChatterBotSettingTab extends PluginSettingTab {
 	private addToolsSection(containerEl: HTMLElement): void {
 		const heading = containerEl.createEl('h3', { cls: 'setting-section-header', text: 'Agent Tools' });
 
-		new Setting(containerEl)
-			.setName('Retrieve from Vault')
-			.setDesc('Enable RAG-based document retrieval from your vault')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.tools.retrieve)
-				.onChange(async (value) => {
-					this.plugin.settings.tools.retrieve = value;
-					await this.plugin.saveSettings();
-				}));
+		const toolMetadata = ToolsFactory.getAllToolMetadata();
 
-		new Setting(containerEl)
-			.setName('Notice')
-			.setDesc('Enable the agent to display notices/alerts')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.tools.notice)
-				.onChange(async (value) => {
-					this.plugin.settings.tools.notice = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('List Markdown Files')
-			.setDesc('Enable the agent to list and browse markdown files in your vault')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.tools.listMarkdownFiles ?? true)
-				.onChange(async (value) => {
-					this.plugin.settings.tools.listMarkdownFiles = value;
-					await this.plugin.saveSettings();
-				}));
+		for (const tool of toolMetadata) {
+			new Setting(containerEl)
+				.setName(tool.settingName)
+				.setDesc(tool.settingDescription)
+				.addToggle(toggle => toggle
+					.setValue((this.plugin.settings.tools as any)[tool.toolName] ?? tool.defaultEnabled)
+					.onChange(async (value) => {
+						(this.plugin.settings.tools as any)[tool.toolName] = value;
+						await this.plugin.saveSettings();
+					}));
+		}
 	}
 }
